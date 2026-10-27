@@ -435,11 +435,16 @@ fn tag_list_counts_desc_dedup() {
     let a = store.append(&text_event("one")).unwrap() as i64;
     let b = store.append(&text_event("two")).unwrap() as i64;
     let c = store.append(&text_event("three")).unwrap() as i64;
-    store.set_tags(a, &["x".into(), "y".into()]).unwrap();
-    store.set_tags(b, &["y".into()]).unwrap();
-    store.set_tags(c, &["y".into(), "x".into()]).unwrap();
-    // y appears in 3 rows, x in 2 -> y first; count desc.
-    assert_eq!(store.tag_list().unwrap(), vec!["y", "x"]);
+    // fixture: the alphabetically-LATER tag is the more used one, so a name
+    // sort (either direction) cannot satisfy the count ordering; one row
+    // repeats a tag to exercise dedup (cubic 6205).
+    store.set_tags(a, &["zeta".into()]).unwrap();
+    store.set_tags(b, &["zeta".into()]).unwrap();
+    store
+        .set_tags(c, &["zeta".into(), "zeta".into(), "alpha".into()])
+        .unwrap();
+    // zeta in 3 rows (deduped within c), alpha in 1 -> zeta first by count.
+    assert_eq!(store.tag_list().unwrap(), vec!["zeta", "alpha"]);
 }
 
 #[test]

@@ -40,8 +40,8 @@ jobs:
         run: cargo test --workspace
       - name: Headless demo
         run: cargo run -p clip-line-app --bin clip-line-headless
-      - name: Encryption feature check
-        run: cargo check -p clip-line-core --features encryption
+      - name: Encryption feature tests
+        run: cargo test -p clip-line-core --features encryption
 
   build-release:
     name: Release build (${{ matrix.os }})

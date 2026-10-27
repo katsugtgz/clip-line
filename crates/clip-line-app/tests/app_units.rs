@@ -9,7 +9,7 @@ mod main;
 use clip_line_core::paste::PasteMode;
 use main::{
     Tab, backup_stamp, date_range_strings, latest_if_newer, parse_hotkey, parse_latest_tag,
-    parse_mode, t, tab_label,
+    parse_mode, quick_pick_index, t, tab_label,
 };
 use std::path::PathBuf;
 
@@ -103,14 +103,27 @@ fn date_range_builds_sqlite_bounds() {
 
 #[test]
 fn quick_pick_digit_maps_to_nth_visible_row() {
-    // story 16: digit key N (1-9) → 0-based row index N-1.
-    for n in 1..=9u8 {
-        let idx = (n - 1) as usize;
-        assert!(idx < 9, "digit {n} maps inside the labelled range");
+    // story 16 via the production helper handle_keys gates on (cubic 6730):
+    // digit key N -> 0-based row index N-1, non-digits never quick-pick.
+    use eframe::egui::Key;
+    for (n, k) in [
+        Key::Num1,
+        Key::Num2,
+        Key::Num3,
+        Key::Num4,
+        Key::Num5,
+        Key::Num6,
+        Key::Num7,
+        Key::Num8,
+        Key::Num9,
+    ]
+    .iter()
+    .enumerate()
+    {
+        assert_eq!(quick_pick_index(*k), Some(n), "{k:?}");
     }
-    // Row label char: '1' + idx, blank for rows past 9.
-    assert_eq!(b'1' as char, '1');
-    assert_eq!((b'1' + 8u8) as char, '9');
+    assert_eq!(quick_pick_index(Key::Num0), None);
+    assert_eq!(quick_pick_index(Key::A), None);
 }
 
 #[test]
@@ -141,7 +154,8 @@ fn latest_tag_flagged_only_when_newer() {
 #[test]
 fn backup_stamp_formats_epoch() {
     assert_eq!(backup_stamp(0), "19700101-000000");
-    // 2026-10-27T00:00:00Z = 1793068800 (leap-aware day count)
+    // 2026-10-27T00:00:00Z = 1793059200 (the earlier comment overstated
+    // the same epoch by 9600s)
     assert_eq!(backup_stamp(1_793_059_200), "20261027-000000");
     // 2024-02-29T23:59:59Z — leap day boundary
     assert_eq!(backup_stamp(1_709_251_199), "20240229-235959");
@@ -150,7 +164,11 @@ fn backup_stamp_formats_epoch() {
 #[test]
 fn extra_tab_labels_use_file_stem() {
     let extras = [
+        // host-independent separators: the win path only behaves on windows
+        #[cfg(windows)]
         PathBuf::from(r"C:\dbs\work-history.db"),
+        #[cfg(not(windows))]
+        PathBuf::from("/dbs/work-history.db"),
         PathBuf::from("/home/u/arch.sdb"),
         // stemless (dotfile) falls back to the full file name
         PathBuf::from("/tmp/.clips"),

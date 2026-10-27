@@ -1122,7 +1122,7 @@ impl App {
         // history is on screen and the row exists; no-op otherwise).
         let mut quick: Option<usize> = None;
         ctx.input(|i| {
-            for (n, k) in [
+            for k in [
                 Key::Num1,
                 Key::Num2,
                 Key::Num3,
@@ -1132,12 +1132,9 @@ impl App {
                 Key::Num7,
                 Key::Num8,
                 Key::Num9,
-            ]
-            .iter()
-            .enumerate()
-            {
-                if i.key_pressed(*k) {
-                    quick = Some(n);
+            ] {
+                if i.key_pressed(k) {
+                    quick = quick_pick_index(k);
                 }
             }
         });
@@ -1470,6 +1467,24 @@ fn hide_soon(ctx: Context, ms: u64, gen_slot: Arc<AtomicU64>, my_gen: u64) {
             }
         })
         .ok();
+}
+
+/// Digit key -> quick-pick row index (story 16). None for non-digit keys;
+/// production gate shared by handle_keys and the unit tests (cubic 6730).
+pub fn quick_pick_index(k: Key) -> Option<usize> {
+    [
+        Key::Num1,
+        Key::Num2,
+        Key::Num3,
+        Key::Num4,
+        Key::Num5,
+        Key::Num6,
+        Key::Num7,
+        Key::Num8,
+        Key::Num9,
+    ]
+    .iter()
+    .position(|&d| d == k)
 }
 
 impl eframe::App for App {
