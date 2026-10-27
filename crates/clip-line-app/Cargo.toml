@@ -21,9 +21,33 @@ clip-line-core = { path = "../clip-line-core" }
 anyhow.workspace = true
 eframe = "0.37"
 egui_extras = { version = "0.37", features = ["serde"] }
+serde.workspace = true
+toml.workspace = true
+global-hotkey = "0.9"
+# Q11 update check: plain blocking HTTP GET, no async runtime needed
+ureq = "2"
 
 [target.'cfg(windows)'.dependencies]
 clip-line-win = { path = "../clip-line-win" }
+tray-icon = "0.26"
+windows = { version = "0.62", features = [
+    "Win32_System_Registry",
+    "Win32_Foundation",
+] }
+
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+clip-line-x11 = { path = "../clip-line-x11", optional = true }
+clip-line-wayland = { path = "../clip-line-wayland", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+clip-line-macos = { path = "../clip-line-macos" }
+
+[features]
+# Linux app builds serve both protocols: paste_on_this_os uses both adapters
+# unconditionally at runtime (cubic 6105).
+default = ["x11", "wayland"]
+x11 = ["clip-line-x11"]
+wayland = ["clip-line-wayland"]
 
 [dev-dependencies]
 tempfile = "3"

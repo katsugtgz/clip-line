@@ -1,0 +1,27 @@
+[package]
+name = "clip-line-macos"
+description = "macOS capture and paste adapters for clipLine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+clip-line-core = { path = "../clip-line-core" }
+anyhow.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.5"
+objc2-foundation = { version = "0.3.2", features = [
+    "NSArray",
+    "NSData",
+    "NSString",
+    "NSURL",
+] }
+objc2-app-kit = { version = "0.3.2", features = [
+    "NSPasteboard",
+    "NSPasteboardItem",
+    "NSRunningApplication",
+    "NSWorkspace",
+] }

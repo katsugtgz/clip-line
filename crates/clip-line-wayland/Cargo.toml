@@ -1,0 +1,15 @@
+[package]
+name = "clip-line-wayland"
+description = "Wayland capture and paste adapters for clipLine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+clip-line-core = { path = "../clip-line-core" }
+anyhow.workspace = true
+
+[target.'cfg(all(unix, target_os = "linux"))'.dependencies]
+wl-clipboard-rs = "0.9.5"

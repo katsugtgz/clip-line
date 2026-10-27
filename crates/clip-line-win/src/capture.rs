@@ -7,9 +7,13 @@ use windows::Win32::System::DataExchange::{
     GetClipboardFormatNameW, OpenClipboard, RemoveClipboardFormatListener,
 };
 use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
+use windows::Win32::System::Threading::{
+    OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, MSG,
-    TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLIPBOARDUPDATE,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, GetWindowTextW,
+    GetWindowThreadProcessId, MSG, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE,
+    WM_CLIPBOARDUPDATE,
 };
 use windows::core::PCWSTR;
 
@@ -83,7 +87,15 @@ impl Capture for WinCapture {
                 let _ = TranslateMessage(&msg);
                 DispatchMessageW(&msg);
                 if msg.message == WM_CLIPBOARDUPDATE {
-                    return read_clipboard();
+                    // Self-writes are filtered by the app's shared SuppressSlot
+                    // (payload identity), not a race-prone arm-after-write
+                    // sequence (cubic 6379).
+                    // EmptyClipboard or foreign formats we can't read leave
+                    // zero blocks — that state carries no clip; keep waiting.
+                    let ev = read_clipboard()?;
+                    if !ev.blocks.is_empty() {
+                        return Ok(ev);
+                    }
                 }
             }
         }
@@ -94,7 +106,21 @@ unsafe fn read_clipboard() -> anyhow::Result<ClipEvent> {
     unsafe {
         let (app, title) = foreground_app();
         let mut blocks = Vec::new();
-        if OpenClipboard(None).is_err() {
+        // Cross-process contention: another app may hold the clipboard for a
+        // few ms. Bounded retry (SPEC capture: adapters own retries); only a
+        // persistent failure falls back to the empty (skip) event.
+        // Cross-process contention: another app may hold the clipboard for
+        // a while. Consume-and-drop loses the ONLY notification, so keep
+        // retrying within a generous window before giving up (cubic 6583).
+        let mut opened = false;
+        for _ in 0..200 {
+            if OpenClipboard(None).is_ok() {
+                opened = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        if !opened {
             return Ok(ClipEvent {
                 blocks,
                 source_app: app,
@@ -169,7 +195,57 @@ unsafe fn read_format(fmt: u32) -> Option<Block> {
     }
 }
 
+/// Foreground window's process name (basename, no `.exe`) and window title.
+/// Unknown steps degrade to "" — never block capture on lookup failure.
 unsafe fn foreground_app() -> (String, String) {
-    // ponytail: process-name + window-title lookup lands with paste polish (phase 2)
-    (String::new(), String::new())
+    unsafe {
+        let app = foreground_process_name().unwrap_or_default();
+        let title = foreground_title().unwrap_or_default();
+        (app, title)
+    }
+}
+
+unsafe fn foreground_process_name() -> Option<String> {
+    unsafe {
+        let hwnd = windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow();
+        if hwnd.is_invalid() {
+            return None;
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid == 0 {
+            return None;
+        }
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut buf = [0u16; 512];
+        let mut len = buf.len() as u32;
+        let r = QueryFullProcessImageNameW(
+            h,
+            PROCESS_NAME_WIN32,
+            windows::core::PWSTR(buf.as_mut_ptr()),
+            &mut len,
+        );
+        let _ = windows::Win32::Foundation::CloseHandle(h);
+        if r.is_err() {
+            return None;
+        }
+        let path = String::from_utf16_lossy(&buf[..len as usize]);
+        let base = path.rsplit(['/', '\\']).next().unwrap_or(&path);
+        Some(base.strip_suffix(".exe").unwrap_or(base).to_string())
+    }
+}
+
+unsafe fn foreground_title() -> Option<String> {
+    unsafe {
+        let hwnd = windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow();
+        if hwnd.is_invalid() {
+            return None;
+        }
+        let mut buf = [0u16; 256];
+        let n = GetWindowTextW(hwnd, &mut buf);
+        if n == 0 {
+            return None;
+        }
+        Some(String::from_utf16_lossy(&buf[..n as usize]))
+    }
 }

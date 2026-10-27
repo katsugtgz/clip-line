@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/clip-line-core", "crates/clip-line-win", "crates/clip-line-app"]
+members = ["crates/clip-line-core", "crates/clip-line-win", "crates/clip-line-x11", "crates/clip-line-wayland", "crates/clip-line-macos", "crates/clip-line-app"]
 
 [workspace.package]
 version = "0.1.0"
