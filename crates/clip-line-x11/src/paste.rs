@@ -242,7 +242,7 @@ fn target_data(
         let mut list: Vec<u32> = text_target_atoms(a).to_vec();
         for b in blocks {
             if let clip_line_core::capture::Format::Registered(_, name) = &b.format {
-                if let Some(atom) = registered_atom(&self.conn, a, name) {
+                if let Some(atom) = registered_atom(conn, a, name) {
                     list.push(atom);
                 }
             }

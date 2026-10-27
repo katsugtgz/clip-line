@@ -131,7 +131,7 @@ impl X11Capture {
     }
 
     /// TARGETS list of the current selection, None when unobtainable.
-    fn targets(&self) -> Option<Vec<Atom>> {
+    fn targets(&mut self) -> Option<Vec<Atom>> {
         let prop = self.atoms.TARGETS; // reuse atom as scratch property name
         self.conn
             .convert_selection(

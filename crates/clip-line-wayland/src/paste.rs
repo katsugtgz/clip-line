@@ -147,15 +147,12 @@ pub fn file_drop_to_uri_list(bytes: &[u8]) -> Vec<u8> {
         .collect::<Vec<u16>>()
         .split(|&u| u == 0)
         .filter(|s| !s.is_empty())
-        .map(|s| String::from_utf16_lossy(s))
+        .map(String::from_utf16_lossy)
         .collect();
     let mut out = String::new();
     for u in urls {
         out.push_str(&u);
-        out.push_str(
-            "
-",
-        );
+        out.push('\n');
     }
     out.into_bytes()
 }

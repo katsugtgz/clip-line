@@ -39,6 +39,12 @@ impl MacCapture {
     }
 }
 
+impl Default for MacCapture {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Capture for MacCapture {
     fn next_event(&mut self) -> anyhow::Result<ClipEvent> {
         loop {

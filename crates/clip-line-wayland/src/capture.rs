@@ -36,9 +36,7 @@ fn is_unsupported(err: &WlError) -> Option<(&'static str, u32)> {
 /// Human message for a compositor-support error, including the desktop
 /// detected via XDG_CURRENT_DESKTOP (issue story 7: capture off must say why).
 pub fn unsupported_message(err: &WlError) -> Option<String> {
-    let Some((name, _version)) = is_unsupported(err) else {
-        return None;
-    };
+    let (name, _version) = is_unsupported(err)?;
     let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_else(|_| "unknown".into());
     let gnome = desktop.to_ascii_lowercase().contains("gnome");
     let why = if gnome {
