@@ -177,7 +177,11 @@ fn hotkeys_slot_outside_13_rejected() {
 #[test]
 fn legacy_ini_ignores_hotkeyslist_outside_options() {
     // cubic 6166: a duplicate key in another section must not win.
-    let p = tmp("ini-section", "clipdiary.cfg", "[Whatever]\nHotKeysList=9,2,86;\n[Options]\nHotKeysList=1,6,86;\n");
+    let p = tmp(
+        "ini-section",
+        "clipdiary.cfg",
+        "[Whatever]\nHotKeysList=9,2,86;\n[Options]\nHotKeysList=1,6,86;\n",
+    );
     let got = import_legacy_ini(&p).unwrap();
     assert_eq!(got.len(), 1);
     assert_eq!(got[0].slot, 1, "only [Options] supplies the hotkeys list");

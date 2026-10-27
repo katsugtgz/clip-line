@@ -95,6 +95,25 @@ struct Extras {
     update: UpdateCfg,
 }
 
+/// The three app-owned sections parsed from one document (see load_config).
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(default)]
+struct AppSections {
+    hotkeys: Hotkeys,
+    autostart: Autostart,
+    update: UpdateCfg,
+}
+
+impl From<AppSections> for Extras {
+    fn from(s: AppSections) -> Self {
+        Extras {
+            hotkeys: s.hotkeys,
+            autostart: s.autostart,
+            update: s.update,
+        }
+    }
+}
+
 fn load_config(path: &Path) -> anyhow::Result<(Config, Extras)> {
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
@@ -104,17 +123,14 @@ fn load_config(path: &Path) -> anyhow::Result<(Config, Extras)> {
         }
         Err(e) => return Err(e.into()),
     };
-    let hotkeys = toml::from_str::<Hotkeys>(&text).unwrap_or_else(|_| Hotkeys::with_default_show());
-    let autostart = toml::from_str::<Autostart>(&text).unwrap_or_default();
-    let update = toml::from_str::<UpdateCfg>(&text).unwrap_or_default();
-    Ok((
-        toml::from_str(&text)?,
-        Extras {
-            hotkeys,
-            autostart,
-            update,
-        },
-    ))
+    // One parse of the app sections: deserializing each type separately reads
+    // a missing TOP-level key as "default" and silently disabled the hotkey
+    // and the autostart/update settings (cubic 6137).
+    let mut sections: AppSections = toml::from_str(&text).unwrap_or_default();
+    if sections.hotkeys.show.trim().is_empty() {
+        sections.hotkeys = Hotkeys::with_default_show();
+    }
+    Ok((toml::from_str(&text)?, sections.into()))
 }
 
 /// "Ctrl+Shift+V" → (modifier bits Alt=1|Ctrl=2|Shift=4|Win=8, virtual key).
@@ -259,6 +275,17 @@ fn now_secs() -> u64 {
 }
 
 fn config_dir() -> Option<PathBuf> {
+    // macOS: documented Application Support location, not the Unix .config.
+    #[cfg(target_os = "macos")]
+    {
+        return std::env::var_os("HOME").map(|h| {
+            PathBuf::from(h)
+                .join("Library")
+                .join("Application Support")
+                .join("clip-line")
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
     std::env::var_os("APPDATA")
         .or_else(|| std::env::var_os("XDG_CONFIG_HOME"))
         .map(PathBuf::from)
@@ -287,7 +314,9 @@ fn db_path(cfg_storage: Option<&Path>) -> anyhow::Result<PathBuf> {
         std::fs::create_dir_all(&p)?;
         return Ok(p.join("clipline.db"));
     }
-    match cfg_storage {
+    // An empty configured path means "unset" (a cleared value must not land
+    // on a throwaway relative DB), not a literal empty path.
+    match cfg_storage.filter(|p| !p.as_os_str().is_empty()) {
         Some(p) => Ok(p.to_path_buf()),
         None => default_db_path(),
     }
@@ -314,11 +343,15 @@ fn single_instance_guard() -> anyhow::Result<()> {
     #[cfg(not(windows))]
     {
         use std::io::OpenOptions;
-        let lock = config_dir()
-            .ok_or_else(|| anyhow::anyhow!("no config dir"))?
-            .join("clipline.lock");
+        let dir = config_dir().ok_or_else(|| anyhow::anyhow!("no config dir"))?;
+        std::fs::create_dir_all(&dir)?; // fresh profile has no config dir yet
+        let lock = dir.join("clipline.lock");
         match OpenOptions::new().write(true).create_new(true).open(&lock) {
-            Ok(_) => {} // hold for process lifetime
+            Ok(_) => {
+                // Process-lifetime guard: removes the lockfile on drop so the
+                // next launch is not blocked by a leftover file (cubic 5829).
+                let _ = LockfileGuard(lock);
+            }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                 anyhow::bail!("clipLine is already running (lockfile {})", lock.display());
             }
@@ -329,6 +362,18 @@ fn single_instance_guard() -> anyhow::Result<()> {
 }
 
 /// Replace (or insert) `[hotkeys] show = "…"` in the TOML text.
+/// Removes the lockfile when dropped; installed after the Unix lockfile is
+/// created (unused on Windows, which uses a named mutex).
+#[cfg_attr(windows, allow(dead_code))]
+struct LockfileGuard(std::path::PathBuf);
+
+impl Drop for LockfileGuard {
+    fn drop(&mut self) {
+        #[cfg(not(windows))]
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 /// Minimal line-based edit: the file is ours, tiny and stable-shaped.
 fn set_toml_show_hotkey(text: &str, hotkey: &str) -> anyhow::Result<String> {
     let line = format!("show = \"{hotkey}\"");
@@ -1005,7 +1050,9 @@ impl App {
                     1 => Some(1), // text
                     2 => Some(3), // url
                     3 => Some(4), // files
-                    4 => Some(5), // image
+                    // Both image rows: CF_DIB captures (5) and registered
+                    // PNG/TIFF clips from macOS/Wayland (0, interop.md).
+                    4 => None,
                     _ => None,
                 },
                 from,
@@ -1102,6 +1149,7 @@ impl App {
         if ctx.input(|i| i.key_pressed(Key::Escape)) {
             // TODO(spec ui): Esc closes the hotkey popup in phase 2; v1 hides the window.
             ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+            self.window_visible = false; // keep the toggle in sync (cubic 6094)
         }
     }
 
@@ -1200,7 +1248,13 @@ impl App {
                                         }
                                         if ui.button(t("Apply")).clicked() {
                                             let new = draft.trim().to_string();
-                                            if !new.is_empty() {
+                                            // Tags are comma-wrapped in storage
+                                            // (interop.md); a comma would split
+                                            // the label.
+                                            if new.contains(',') {
+                                                self.status =
+                                                    "tag names cannot contain commas".into();
+                                            } else if !new.is_empty() {
                                                 if let Err(e) = self.store.tag_rename(&tag, &new) {
                                                     self.status = format!("tag_rename: {e}");
                                                 }
@@ -1441,6 +1495,15 @@ impl eframe::App for App {
         egui::Panel::top("tabs").show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.tab, Tab::History, t("History"));
+                let extras: Vec<PathBuf> =
+                    self.extra_stores.iter().map(|(p, _)| p.clone()).collect();
+                for i in 0..extras.len() {
+                    ui.selectable_value(
+                        &mut self.tab,
+                        Tab::Extra(i),
+                        tab_label("History", &extras, Tab::Extra(i)),
+                    );
+                }
                 ui.selectable_value(&mut self.tab, Tab::Snippets, t("Snippets"));
             });
         });
@@ -1460,6 +1523,9 @@ impl eframe::App for App {
                     }
                     self.search_focus = r.has_focus();
                     if r.changed() {
+                        // A stale row index can point past the filtered list or
+                        // at an arbitrary hit; Enter must paste the top row.
+                        self.selected = None;
                         self.dirty = true;
                     }
                     if ui.checkbox(&mut self.starred_only, t("Starred")).changed() {

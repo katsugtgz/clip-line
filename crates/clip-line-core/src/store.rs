@@ -122,8 +122,6 @@ CREATE TRIGGER IF NOT EXISTS log_fts_au AFTER UPDATE ON log BEGIN
 END;
 ";
 
-const FTS_MATCH_CLAUSE: &str =
-    " AND id IN (SELECT rowid FROM log_fts WHERE log_fts MATCH ?1 AND log.title LIKE '%'||?1||'%')";
 const LIKE_CLAUSE: &str =
     " AND (title LIKE '%'||?1||'%' OR appname LIKE '%'||?1||'%' OR url LIKE '%'||?1||'%')";
 
@@ -146,31 +144,6 @@ fn setup_fts(conn: &Connection) -> anyhow::Result<()> {
         )?;
     }
     Ok(())
-}
-
-/// MATCH if q parses as FTS5 syntax, else LIKE (percent wildcards, bare punctuation).
-fn match_clause(conn: &Connection, q: &str) -> anyhow::Result<&'static str> {
-    // FTS5 MATCH is word-token; SPEC parity search is substring LIKE %q%.
-    // Use MATCH only for plain words (no wildcards) and LIKE for everything
-    // the user means as a substring ("hello worl" must still find rows).
-    if q.contains(['%', '_', '*', '"', '\'']) {
-        return Ok(LIKE_CLAUSE);
-    }
-    // ponytail: any probe error falls back to LIKE — only failure mode is bad FTS5 syntax
-    Ok(
-        if conn
-            .query_row(
-                "SELECT count(*) FROM log_fts WHERE log_fts MATCH ?1",
-                params![q],
-                |_| Ok(()),
-            )
-            .is_ok()
-        {
-            FTS_MATCH_CLAUSE
-        } else {
-            LIKE_CLAUSE
-        },
-    )
 }
 
 const SNIPPETS_SCHEMA: &str = "

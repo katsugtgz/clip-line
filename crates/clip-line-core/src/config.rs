@@ -90,7 +90,7 @@ fn key_name(vkey: u32) -> Option<String> {
         0x30..=0x39 => Some((vkey as u8 as char).to_string()), // 0-9
         0x41..=0x5A => Some((vkey as u8 as char).to_string()), // A-Z
         0x70..=0x87 => Some(format!("F{}", vkey - 0x6F)),      // F1-F24
-        0x08 => Some("Backspace".into()),                      // shared VK table with the app parser
+        0x08 => Some("Backspace".into()), // shared VK table with the app parser
         0x09 => Some("Tab".into()),
         0x0D => Some("Enter".into()),
         0x13 => Some("Pause".into()),
@@ -154,7 +154,10 @@ pub fn import_legacy_ini(path: &Path) -> anyhow::Result<Vec<LegacyHotkey>> {
     for l in text.lines() {
         let l = l.trim();
         if let Some(section) = l.strip_prefix('[') {
-            in_options = section.trim_end().trim_end_matches(']').eq_ignore_ascii_case("Options");
+            in_options = section
+                .trim_end()
+                .trim_end_matches(']')
+                .eq_ignore_ascii_case("Options");
             continue;
         }
         if !in_options {
