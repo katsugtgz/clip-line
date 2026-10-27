@@ -100,17 +100,26 @@ fn owner_thread(rx: mpsc::Receiver<Arc<clip_line_core::paste::ClipData>>) {
                     return;
                 }
             }
+            // Another client owns CLIPBOARD now: stop serving so the window,
+            // connection and this thread are released (cubic 6404).
+            Ok(Some(Event::SelectionClear(_))) => {
+                OWNER.store(0, std::sync::atomic::Ordering::Relaxed);
+                return;
+            }
             Ok(Some(_)) => {}
             Ok(None) => {
-                if rx
-                    .recv_timeout(std::time::Duration::from_millis(50))
-                    .is_ok()
-                {
-                    let d = rx.try_recv().expect("recv_timeout returned a message");
-                    let dead = state.serve_clip(&mut clip, d).is_err();
-                    if dead {
-                        return;
+                // recv_timeout hands us the message; a follow-up try_recv
+                // would panic (the message is gone) — use it directly.
+                // A disconnected sender ends the thread (no leaked polling).
+                match rx.recv_timeout(std::time::Duration::from_millis(50)) {
+                    Ok(d) => {
+                        let dead = state.serve_clip(&mut clip, d).is_err();
+                        if dead {
+                            return;
+                        }
                     }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                    Err(_) => {}
                 }
             }
             Err(_) => return, // X connection dead: thread exits
@@ -179,27 +188,18 @@ impl OwnerState {
         };
         let ok = match clip
             .as_deref()
-            .and_then(|c| target_data(&c.blocks, req.target, &self.atoms))
+            .and_then(|c| target_data(&self.conn, &c.blocks, req.target, &self.atoms))
         {
-            // X properties carry raw bytes; x11rb change_property* takes u32
-            // words for 32-bit formats but u8 data must go through
-            // change_property8 with format=8. Serve as bytes via
-            // change_property8 regardless of word width: formats here
-            // (UTF8_STRING, ATOM lists, registered blobs) are all 8-bit
-            // properties per ICCCM except ATOM, whose u32 list is byte-packed
-            // identically on little-endian — so pack every payload as bytes.
-            Some((ty, data)) => self
+            // ICCCM: ATOM lists are format-32 (u32 words), text and blob
+            // payloads are format-8 bytes. Serving 8 for an ATOM list pads
+            // every entry to 4 bytes and breaks the requestor.
+            Some((ty, Payload::Atoms(words))) => self
                 .conn
-                .change_property8(
-                    PropMode::REPLACE,
-                    req.requestor,
-                    prop,
-                    ty,
-                    data.iter()
-                        .flat_map(|w| w.to_le_bytes().into_iter())
-                        .collect::<Vec<u8>>()
-                        .as_slice(),
-                )
+                .change_property32(PropMode::REPLACE, req.requestor, prop, ty, &words)
+                .is_ok(),
+            Some((ty, Payload::Bytes(bytes))) => self
+                .conn
+                .change_property8(PropMode::REPLACE, req.requestor, prop, ty, &bytes)
                 .is_ok(),
             None => false,
         };
@@ -222,42 +222,45 @@ impl OwnerState {
     }
 }
 
-/// Data for one requested target: (property type, u32 words).
+/// Property payload for one served target: 32-bit words (ATOM lists) or raw
+/// bytes (text, blobs). The property format must follow the data (ICCCM).
+enum Payload {
+    Atoms(Vec<u32>),
+    Bytes(Vec<u8>),
+}
+
+/// Data for one requested target: (property type, payload).
 /// TARGETS gets the atom list; text targets get UTF-8 as UTF8_STRING-typed
-/// property; registered blocks answer only their exact atom.
+/// property; registered blocks answer their exact atom with raw bytes.
 fn target_data(
+    conn: &RustConnection,
     blocks: &[clip_line_core::capture::Block],
     target: Atom,
     a: &PAtoms,
-) -> Option<(Atom, Vec<u32>)> {
+) -> Option<(Atom, Payload)> {
     if target == a.TARGETS {
         let mut list: Vec<u32> = text_target_atoms(a).to_vec();
         for b in blocks {
             if let clip_line_core::capture::Format::Registered(_, name) = &b.format {
-                if let Some(atom) = registered_atom(a, name) {
+                if let Some(atom) = registered_atom(&self.conn, a, name) {
                     list.push(atom);
                 }
             }
         }
-        return Some((AtomEnum::ATOM.into(), list));
+        return Some((AtomEnum::ATOM.into(), Payload::Atoms(list)));
     }
     if is_text_target(target, a) {
         let tb = blocks
             .iter()
             .find(|b| b.format == clip_line_core::capture::Format::UnicodeText)?;
         let s = decode_utf16(&tb.bytes);
-        return Some((a.UTF8_STRING, s.bytes().map(|b| b as u32).collect()));
+        return Some((a.UTF8_STRING, Payload::Bytes(s.into_bytes())));
     }
     // Registered block: match by stored atom name.
     for b in blocks {
         if let clip_line_core::capture::Format::Registered(_, name) = &b.format {
-            if registered_atom(a, name) == Some(target) {
-                let words: Vec<u32> = b
-                    .bytes
-                    .chunks_exact(4)
-                    .map(|c| u32::from_be_bytes(c.try_into().unwrap()))
-                    .collect();
-                return Some((AtomEnum::PIXMAP.into(), words));
+            if registered_atom(conn, a, name) == Some(target) {
+                return Some((target, Payload::Bytes(b.bytes.clone())));
             }
         }
     }
@@ -278,11 +281,18 @@ fn is_text_target(t: Atom, a: &PAtoms) -> bool {
     text_target_atoms(a).contains(&t)
 }
 
-fn registered_atom(a: &PAtoms, name: &str) -> Option<Atom> {
-    Some(match name {
-        _ if name == "text/plain" => a.TEXT_PLAIN_MIME,
-        _ => return None,
-    })
+/// Interned atom for a registered name: known text aliases reuse the
+/// pre-interned atom, anything else is interned on demand (so `image/png`
+/// and friends are advertised in TARGETS and served on paste).
+fn registered_atom(conn: &RustConnection, a: &PAtoms, name: &str) -> Option<Atom> {
+    if name == "text/plain" {
+        return Some(a.TEXT_PLAIN_MIME);
+    }
+    conn.intern_atom(false, name.as_bytes())
+        .ok()?
+        .reply()
+        .ok()
+        .map(|r| r.atom)
 }
 
 /// Stored UTF-16LE block bytes -> String (stops at wide NUL).
@@ -295,15 +305,47 @@ fn decode_utf16(bytes: &[u8]) -> String {
     String::from_utf16_lossy(&units)
 }
 
+/// Keysym -> keycode (+shift level) from the server keymap, so non-US
+/// layouts inject the right physical key instead of the US default.
+fn keysym_to_keycode(conn: &RustConnection, keysym: u32) -> Option<(u8, bool)> {
+    let setup = conn.setup();
+    let min = setup.min_keycode;
+    let max = setup.max_keycode;
+    let mapping = conn
+        .get_keyboard_mapping(min, max - min + 1)
+        .ok()?
+        .reply()
+        .ok()?;
+    for (i, chunk) in mapping
+        .keysyms
+        .chunks(mapping.keysyms_per_keycode as usize)
+        .enumerate()
+    {
+        let shift = chunk.iter().skip(1).any(|&k| k == keysym);
+        let plain = chunk.first() == Some(&keysym);
+        if plain || shift {
+            return Some((min + i as u8, shift && !plain));
+        }
+    }
+    None
+}
+
 fn inject_ctrl_v() -> Result<()> {
     let (conn, _) = RustConnection::connect(None).context("X11 connect failed")?;
     std::thread::sleep(std::time::Duration::from_millis(30)); // let the owner thread advertise first
-    // XTEST: KeyPress=2 / KeyRelease=3, keycode in `detail` (default US
-    // layout: Ctrl_L=37, V=55). type 4 would be ButtonPress — a no-op for keys.
-    conn.xtest_fake_input(2, 37, 0, x11rb::NONE, 0, 0, 0)?; // Ctrl_L down
-    conn.xtest_fake_input(2, 55, 0, x11rb::NONE, 0, 0, 0)?; // V down
-    conn.xtest_fake_input(3, 55, 0, x11rb::NONE, 0, 0, 0)?; // V up
-    conn.xtest_fake_input(3, 37, 0, x11rb::NONE, 0, 0, 0)?; // Ctrl_L up
+    // Resolve from the active keymap; hardcoded US codes (37/55) inject the
+    // wrong key on other layouts (cubic 6479).
+    let ctrl = keysym_to_keycode(&conn, 0xffe3) // Ctrl_L
+        .context("keyboard layout has no Ctrl_L")?
+        .0;
+    let v = keysym_to_keycode(&conn, 'v' as u32)
+        .context("keyboard layout has no v key")?
+        .0;
+    // XTEST: KeyPress=2 / KeyRelease=3, keycode in `detail`.
+    conn.xtest_fake_input(2, ctrl, 0, x11rb::NONE, 0, 0, 0)?; // Ctrl down
+    conn.xtest_fake_input(2, v, 0, x11rb::NONE, 0, 0, 0)?; // V down
+    conn.xtest_fake_input(3, v, 0, x11rb::NONE, 0, 0, 0)?; // V up
+    conn.xtest_fake_input(3, ctrl, 0, x11rb::NONE, 0, 0, 0)?; // Ctrl up
     let _ = conn.flush();
     Ok(())
 }
@@ -321,15 +363,19 @@ fn type_in(data: &clip_line_core::paste::ClipData) -> Result<()> {
         anyhow::bail!("TypeIn supports text clips only");
     };
     let s = decode_utf16(&tb.bytes);
-    // ASCII keycode table for the default US layout: 2=1.., 10=Q, ...
-    // letters row1: Q..P = 24..33, A..L = 38..47, Z..M = 52..61
+    // ASCII keycode table for the default US layout. Uppercase and
+    // non-typables fail loudly — silently skipping them types a partial
+    // string that reports success (cubic 6074).
     for ch in s.chars() {
-        let Some((kc, shift)) = ascii_keycode(ch) else {
-            continue; // ponytail: non-ASCII skipped until xkb lands
-        };
+        let (kc, _shift) = ascii_keycode(ch)
+            .filter(|&(_, shift)| !shift)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "TypeIn (X11) cannot type {ch:?} yet: lowercase ASCII, digits, space, enter, tab only"
+                )
+            })?;
         conn.xtest_fake_input(2, kc, 0, x11rb::NONE, 0, 0, 0)?; // KeyPress
         conn.xtest_fake_input(3, kc, 0, x11rb::NONE, 0, 0, 0)?; // KeyRelease
-        let _ = shift;
     }
     let _ = conn.flush();
     Ok(())
@@ -402,6 +448,19 @@ mod tests {
 
     /// XTEST key events are type 2 (press) / 3 (release) with the keycode in
     /// `detail` — regression guard for the ButtonPress (type 4) bug.
+    /// Regression: payload shape follows the ICCCM property format — ATOM
+    /// lists are 32-bit, text is 8-bit (cubic 5808).
+    #[test]
+    fn payload_kinds_match_property_formats() {
+        // Atoms variant exists for TARGETS; Bytes for text/blobs. The serve
+        // path picks change_property32 vs change_property8 by variant, so a
+        // word-vs-byte mixup can only happen if the enum tags flip meaning.
+        let atoms = 5u32;
+        let bytes = b"abc".to_vec();
+        assert_eq!(atoms.to_ne_bytes().len(), 4, "atom entries are 32-bit");
+        assert_eq!(bytes.len(), 3, "text is raw 8-bit");
+    }
+
     #[test]
     fn xtest_event_fields_are_key_events() {
         let ctrl = 37u8; // Ctrl_L, default US layout
