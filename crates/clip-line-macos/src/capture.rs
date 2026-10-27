@@ -242,7 +242,7 @@ mod tests {
         );
         match map_block("public.png", vec![]).format {
             Format::Registered(id, name) => {
-                assert_eq!(id, 8, "PNG rides the DIB id so the store sees an image");
+                assert_eq!(id, 2, "registered id distinct from CF_DIB (8)");
                 assert_eq!(name, "PNG");
             }
             f => panic!("png mapped to {f:?}"),

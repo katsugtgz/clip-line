@@ -26,6 +26,7 @@ mod cg {
     pub const SESSION_EVENT_TAP: CGEventTapLocation = CGEventTapLocation(0);
     pub const COMBINED_SESSION_STATE: u32 = 0;
 
+    #[link(name = "CoreGraphics", kind = "framework")]
     unsafe extern "C" {
         pub fn CGEventCreateKeyboardEvent(
             source: *const std::ffi::c_void,
@@ -36,6 +37,15 @@ mod cg {
         pub fn CGEventSetFlags(event: *mut std::ffi::c_void, flags: u64);
         pub fn CGEventSourceCreate(state_id: u32) -> *mut std::ffi::c_void;
         pub fn CFRelease(cf: *mut std::ffi::c_void);
+        // ApplicationServices: no-arg trust check (does not prompt)
+        pub fn AXIsProcessTrusted() -> bool;
+    }
+
+    /// True when this process may post CGEvents (Accessibility granted).
+    /// CGEventPost has no return value, so this is the only way to detect a
+    /// missing permission instead of reporting a silent no-op as success.
+    pub unsafe fn ax_trusted() -> bool {
+        AXIsProcessTrusted()
     }
 }
 
@@ -76,14 +86,14 @@ impl Paster for MacPaster {
 
 /// Pure mapping: Block -> (UTI string, payload bytes). Unit-test surface.
 pub fn block_to_ns_type(b: &Block) -> Option<(String, Vec<u8>)> {
-    fn units_to_bytes(u: &[u16]) -> Vec<u8> {
-        u.iter().flat_map(|x| x.to_le_bytes()).collect()
-    }
     match &b.format {
         Format::UnicodeText => {
-            let mut u: Vec<u16> = decode_utf16(&b.bytes);
-            u.push(0); // pasteboard string data: NUL-terminated UTF-16
-            Some(("public.utf8-plain-text".into(), units_to_bytes(&u)))
+            // public.utf8-plain-text expects UTF-8 bytes; the stored block is
+            // UTF-16LE (may contain embedded NULs) — decode first.
+            Some((
+                "public.utf8-plain-text".into(),
+                decode_utf16(&b.bytes).into_bytes(),
+            ))
         }
         Format::ImageDib | Format::ImageDibV5 => {
             // DIB payloads are Windows-format; macOS paste needs PNG. No
@@ -124,35 +134,40 @@ unsafe fn write_blocks(pb: &NSPasteboard, blocks: &[Block]) -> anyhow::Result<()
         if blocks.is_empty() {
             anyhow::bail!("no blocks to paste");
         }
-        pb.clearContents();
-        // One NSPasteboardItem per distinct UTI; file URLs need one item per
-        // URL, so split them out.
-        let mut items: Vec<objc2::rc::Retained<NSPasteboardItem>> = Vec::new();
+        // Build and validate everything BEFORE clearing: a failed conversion
+        // must not destroy the user's current clipboard (cubic 6331).
+        let mut file_items: Vec<objc2::rc::Retained<NSPasteboardItem>> = Vec::new();
+        let text_item = NSPasteboardItem::new();
+        let mut have_text = false;
         for b in blocks {
             let Some((uti, bytes)) = block_to_ns_type(b) else {
                 continue;
             };
             if uti == "public.file-url" {
                 for url in crate::capture::file_urls_from_bytes(&bytes) {
-                    items.push(file_item(&url));
+                    file_items.push(file_item(&url));
                 }
             } else {
-                let item = NSPasteboardItem::new();
+                // All companion representations ride ONE item: apps that read
+                // the first logical item lose alternates otherwise (cubic 6349).
                 let uti_s = NSString::from_str(&uti);
                 let data = NSData::with_bytes(&bytes);
-                if !item.setData_forType(&data, &uti_s) {
+                if !text_item.setData_forType(&data, &uti_s) {
                     anyhow::bail!("setData_forType failed for {uti}");
                 }
-                items.push(item);
+                have_text = true;
             }
         }
-        if items.is_empty() {
+        if !have_text && file_items.is_empty() {
             anyhow::bail!("no block had a macOS pasteboard representation");
         }
-        let objects: Vec<objc2::rc::Retained<ProtocolObject<dyn NSPasteboardWriting>>> = items
-            .into_iter()
-            .map(ProtocolObject::from_retained)
-            .collect();
+        let mut objects: Vec<objc2::rc::Retained<ProtocolObject<dyn NSPasteboardWriting>>> =
+            Vec::new();
+        if have_text {
+            objects.push(ProtocolObject::from_retained(text_item));
+        }
+        objects.extend(file_items.into_iter().map(ProtocolObject::from_retained));
+        pb.clearContents();
         if !pb.writeObjects(&NSArray::from_retained_slice(&objects)) {
             anyhow::bail!("writeObjects failed");
         }
@@ -172,6 +187,11 @@ unsafe fn file_item(url: &str) -> objc2::rc::Retained<NSPasteboardItem> {
 
 fn inject_cmd_v() -> anyhow::Result<()> {
     unsafe {
+        if !cg::ax_trusted() {
+            anyhow::bail!(
+                "clipLine needs the Accessibility permission to inject Cmd+V (System Settings > Privacy & Security > Accessibility) and retry"
+            );
+        }
         let source = cg::CGEventSourceCreate(cg::COMBINED_SESSION_STATE);
         let down = cg::CGEventCreateKeyboardEvent(source, KVK_ANSI_V, true);
         if down.is_null() {
@@ -205,15 +225,16 @@ mod tests {
     use clip_line_core::capture::{Block, Format};
 
     #[test]
-    fn text_block_maps_to_terminated_utf16() {
+    fn text_block_maps_to_utf8_bytes() {
+        // cubic 5888: the UTI is utf8-plain-text, so the payload must be
+        // UTF-8 (stored block bytes are UTF-16LE).
         let b = Block {
             format: Format::UnicodeText,
-            bytes: "ab".encode_utf16().flat_map(|u| u.to_le_bytes()).collect(),
+            bytes: "h\u{e9}".encode_utf16().flat_map(|u| u.to_le_bytes()).collect(),
         };
         let (uti, bytes) = block_to_ns_type(&b).unwrap();
         assert_eq!(uti, "public.utf8-plain-text");
-        assert_eq!(bytes.len(), 6, "2 chars + NUL, wide");
-        assert_eq!(&bytes[4..], &[0, 0], "single trailing wide NUL");
+        assert_eq!(bytes, "h\u{e9}".as_bytes());
     }
 
     #[test]
