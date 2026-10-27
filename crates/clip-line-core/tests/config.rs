@@ -35,6 +35,19 @@ hide_after_ms = 2000
 }
 
 #[test]
+fn toml_backup_on_exit() {
+    let p = tmp("bk", "clipline.toml", "[storage]\nbackup_on_exit = true\n");
+    let c = Config::load(&p).unwrap();
+    assert!(c.storage.backup_on_exit);
+
+    let p = tmp("bk2", "clipline.toml", "");
+    assert!(
+        !Config::load(&p).unwrap().storage.backup_on_exit,
+        "default off"
+    );
+}
+
+#[test]
 fn toml_defaults_when_empty() {
     let p = tmp("empty", "clipline.toml", "");
     let c = Config::load(&p).unwrap();

@@ -7,7 +7,10 @@
 mod main;
 
 use clip_line_core::paste::PasteMode;
-use main::{date_range_strings, latest_if_newer, parse_hotkey, parse_latest_tag, parse_mode, t};
+use main::{
+    backup_stamp, date_range_strings, latest_if_newer, parse_hotkey, parse_latest_tag, parse_mode,
+    t,
+};
 
 #[test]
 fn hotkey_strings_parse_to_mod_bits_and_vkey() {
@@ -132,4 +135,13 @@ fn latest_tag_flagged_only_when_newer() {
         "older tag is not an update"
     );
     assert_eq!(latest_if_newer("0.2.0", "{}"), None);
+}
+
+#[test]
+fn backup_stamp_formats_epoch() {
+    assert_eq!(backup_stamp(0), "19700101-000000");
+    // 2026-10-27T00:00:00Z = 1793068800 (leap-aware day count)
+    assert_eq!(backup_stamp(1_793_059_200), "20261027-000000");
+    // 2024-02-29T23:59:59Z — leap day boundary
+    assert_eq!(backup_stamp(1_709_251_199), "20240229-235959");
 }

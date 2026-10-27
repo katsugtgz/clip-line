@@ -80,6 +80,8 @@ pub struct Snippet {
 pub struct Store {
     conn: Mutex<Connection>,
     snips_attached: AtomicBool,
+    /// Attached snippets file, recorded for backup_to's plain copy.
+    snips_path: Mutex<Option<PathBuf>>,
     #[allow(dead_code)]
     path: PathBuf,
 }
@@ -229,6 +231,7 @@ impl Store {
         Ok(Store {
             conn: Mutex::new(conn),
             snips_attached: AtomicBool::new(false),
+            snips_path: Mutex::new(None),
             path: path.to_path_buf(),
         })
     }
@@ -246,6 +249,45 @@ impl Store {
         .with_context(|| format!("attach {}", path.display()))?;
         conn.execute_batch(SNIPPETS_SCHEMA)?;
         self.snips_attached.store(true, Ordering::Relaxed);
+        drop(conn);
+        *self.snips_path.lock().unwrap() = Some(path.to_path_buf());
+        Ok(())
+    }
+
+    /// Backs up the main database to `dst` via the SQLite online-backup API,
+    /// then copies an attached snippets file next to it (`<dst stem>.snippets.sdb`).
+    /// NOTE: the SQLite backup API moves ONE schema (main) per call — attached
+    /// databases are NOT included, so snippets get a plain file copy under the
+    /// conn lock (journal mode is rollback-journal, so no WAL sidecars to chase).
+    /// ponytail: if snippets ever move to WAL, checkpoint or backup-api them too.
+    pub fn backup_to(&self, dst: &Path) -> anyhow::Result<()> {
+        use rusqlite::backup::{Backup, StepResult};
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("create {}", parent.display()))?;
+        }
+        let conn = self.conn.lock().unwrap();
+        let mut out =
+            Connection::open(dst).with_context(|| format!("open backup {}", dst.display()))?;
+        let b = Backup::new(&conn, &mut out)?;
+        let mut r = StepResult::More;
+        while r == StepResult::More {
+            r = b.step(100)?;
+        }
+        if r != StepResult::Done {
+            bail!("backup step ended {r:?}");
+        }
+        drop(b);
+        if let Some(sp) = self.snips_path.lock().unwrap().as_ref() {
+            let to = dst.with_file_name(format!(
+                "{}.snippets.sdb",
+                dst.file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("snippets")
+            ));
+            std::fs::copy(sp, &to)
+                .with_context(|| format!("copy snippets {} -> {}", sp.display(), to.display()))?;
+        }
         Ok(())
     }
 
