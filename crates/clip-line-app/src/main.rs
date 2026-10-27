@@ -91,6 +91,7 @@ impl Default for UpdateCfg {
 #[derive(Debug)]
 struct Extras {
     hotkeys: Hotkeys,
+    #[cfg_attr(not(windows), allow(dead_code))]
     autostart: Autostart,
     update: UpdateCfg,
 }
@@ -278,12 +279,12 @@ fn config_dir() -> Option<PathBuf> {
     // macOS: documented Application Support location, not the Unix .config.
     #[cfg(target_os = "macos")]
     {
-        return std::env::var_os("HOME").map(|h| {
+        std::env::var_os("HOME").map(|h| {
             PathBuf::from(h)
                 .join("Library")
                 .join("Application Support")
                 .join("clip-line")
-        });
+        })
     }
     #[cfg(not(target_os = "macos"))]
     std::env::var_os("APPDATA")
@@ -967,6 +968,7 @@ impl App {
         }
     }
 
+    #[cfg_attr(not(windows), allow(dead_code))]
     fn show_main(&mut self, ctx: &Context) {
         ctx.send_viewport_cmd(ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(ViewportCommand::Focus);
