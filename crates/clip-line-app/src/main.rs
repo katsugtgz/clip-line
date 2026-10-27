@@ -342,7 +342,7 @@ fn single_instance_guard() -> anyhow::Result<()> {
     }
     #[cfg(not(windows))]
     {
-        use std::io::OpenOptions;
+        use std::fs::OpenOptions;
         let dir = config_dir().ok_or_else(|| anyhow::anyhow!("no config dir"))?;
         std::fs::create_dir_all(&dir)?; // fresh profile has no config dir yet
         let lock = dir.join("clipline.lock");
@@ -590,14 +590,7 @@ fn spawn_capture(
     std::thread::Builder::new()
         .name("capture".into())
         .spawn(move || {
-            use clip_line_core::capture::Capture;
-            let mut cap = match clip_line_macos::MacCapture::new() {
-                Ok(c) => c,
-                Err(e) => {
-                    let _ = status_tx.send(format!("capture disabled: {e}"));
-                    return;
-                }
-            };
+            let mut cap = clip_line_macos::MacCapture::new();
             capture_loop(&mut cap, store, suppress, status_tx);
         })
         .map(|_| ())
@@ -611,7 +604,6 @@ fn spawn_capture(
     suppress: SuppressSlot,
     status_tx: std::sync::mpsc::Sender<String>,
 ) -> anyhow::Result<()> {
-    use clip_line_core::capture::Capture;
     std::thread::Builder::new()
         .name("capture".into())
         .spawn(move || {
