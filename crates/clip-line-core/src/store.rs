@@ -79,6 +79,8 @@ pub struct Snippet {
 
 pub struct Store {
     conn: Mutex<Connection>,
+    /// Key the DB was opened with (SQLCipher), reused for encrypted backups.
+    key: Option<String>,
     snips_attached: AtomicBool,
     /// Attached snippets file, recorded for backup_to's plain copy.
     snips_path: Mutex<Option<PathBuf>>,
@@ -120,7 +122,8 @@ CREATE TRIGGER IF NOT EXISTS log_fts_au AFTER UPDATE ON log BEGIN
 END;
 ";
 
-const FTS_MATCH_CLAUSE: &str = " AND id IN (SELECT rowid FROM log_fts WHERE log_fts MATCH ?1)";
+const FTS_MATCH_CLAUSE: &str =
+    " AND id IN (SELECT rowid FROM log_fts WHERE log_fts MATCH ?1 AND log.title LIKE '%'||?1||'%')";
 const LIKE_CLAUSE: &str =
     " AND (title LIKE '%'||?1||'%' OR appname LIKE '%'||?1||'%' OR url LIKE '%'||?1||'%')";
 
@@ -230,6 +233,7 @@ impl Store {
         setup_fts(&conn)?;
         Ok(Store {
             conn: Mutex::new(conn),
+            key: opts.key,
             snips_attached: AtomicBool::new(false),
             snips_path: Mutex::new(None),
             path: path.to_path_buf(),
@@ -269,6 +273,16 @@ impl Store {
         let conn = self.conn.lock().unwrap();
         let mut out =
             Connection::open(dst).with_context(|| format!("open backup {}", dst.display()))?;
+        // An encrypted source needs an encrypted destination: apply the same
+        // key before any page write or the backup lands as ciphertext garbage.
+        #[cfg(feature = "encryption")]
+        if let Some(k) = &self.key {
+            use rusqlite::config::DbConfig;
+            let _ = out.set_db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE, false);
+            apply_key(&out, k)?;
+        }
+        #[cfg(not(feature = "encryption"))]
+        let _ = &self.key;
         let b = Backup::new(&conn, &mut out)?;
         let mut r = StepResult::More;
         while r == StepResult::More {
@@ -340,8 +354,10 @@ impl Store {
             sql.push_str(&format!(" AND type={k}"));
         }
         let conn = self.conn.lock().unwrap();
-        if let Some(q) = &f.query {
-            sql.push_str(match_clause(&conn, q)?);
+        if f.query.is_some() {
+            // SPEC: search is substring LIKE %q% parity ("FTS5 later"); MATCH
+            // is word-token and drops substring/prefix queries (cubic 5983).
+            sql.push_str(LIKE_CLAUSE);
         }
         if f.from.is_some() {
             sql.push_str(" AND created>=?2");
@@ -349,13 +365,22 @@ impl Store {
         if f.to.is_some() {
             sql.push_str(" AND created<=?3");
         }
+        // A date-only upper bound ("2026-10-27", 10 chars) excludes every row
+        // of that day under string compare; widen it to the end of the day.
+        let to = f.to.as_deref().map(|t| {
+            if t.len() == 10 {
+                format!("{t} 23:59:59")
+            } else {
+                t.to_string()
+            }
+        });
         sql.push_str(" ORDER BY id DESC LIMIT ?4 OFFSET ?5");
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(
             params![
                 f.query.clone().unwrap_or_default(),
                 f.from.clone().unwrap_or_default(),
-                f.to.clone().unwrap_or_default(),
+                to.unwrap_or_default(),
                 f.limit.max(1),
                 f.offset
             ],
@@ -421,9 +446,9 @@ impl Store {
         }
         drop(stmt);
         drop(conn);
-        let mut v: Vec<String> = counts.into_keys().collect();
-        v.sort_by(|a, b| b.cmp(a));
-        Ok(v)
+        let mut v: Vec<(String, usize)> = counts.into_iter().collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        Ok(v.into_iter().map(|(t, _)| t).collect())
     }
 
     /// Renames tag `old` to `new` across all rows. Whole-tag match only on the
@@ -517,9 +542,19 @@ impl Store {
         Ok(())
     }
 
+    /// Deletes a snippet and its whole subtree (interop.md `common` is a pid
+    /// tree; deleting a parent must not orphan its descendants).
     pub fn snippet_delete(&self, id: i64) -> anyhow::Result<()> {
         let conn = self.snips()?;
-        conn.execute("DELETE FROM snippets.common WHERE id=?1", params![id])?;
+        let mut front = vec![id];
+        while let Some(cur) = front.pop() {
+            conn.execute("DELETE FROM snippets.common WHERE id=?1", params![cur])?;
+            let mut stmt = conn.prepare("SELECT id FROM snippets.common WHERE pid=?1")?;
+            let kids: Vec<i64> = stmt
+                .query_map(params![cur], |r| r.get(0))?
+                .collect::<Result<_, _>>()?;
+            front.extend(kids);
+        }
         Ok(())
     }
 
