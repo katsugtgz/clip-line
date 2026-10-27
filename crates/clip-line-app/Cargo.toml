@@ -43,7 +43,9 @@ clip-line-wayland = { path = "../clip-line-wayland", optional = true }
 clip-line-macos = { path = "../clip-line-macos" }
 
 [features]
-default = []
+# Linux app builds serve both protocols: paste_on_this_os uses both adapters
+# unconditionally at runtime (cubic 6105).
+default = ["x11", "wayland"]
 x11 = ["clip-line-x11"]
 wayland = ["clip-line-wayland"]
 
