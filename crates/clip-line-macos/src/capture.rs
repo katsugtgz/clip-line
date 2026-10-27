@@ -146,7 +146,7 @@ unsafe fn read_pasteboard(pb: &NSPasteboard) -> anyhow::Result<ClipEvent> {
                     }
                 }
                 Some(uti) => {
-                    if let Some(d) = pb.dataForType(t) {
+                    if let Some(d) = pb.dataForType(&*t) {
                         let bytes = d.to_vec();
                         // Text: store as UTF-16LE like every other adapter;
                         // dataForType(String) yields UTF-8 bytes on macOS.
@@ -160,7 +160,7 @@ unsafe fn read_pasteboard(pb: &NSPasteboard) -> anyhow::Result<ClipEvent> {
                 }
                 None => {
                     // Non-core type: keep as registered block when data exists.
-                    if let Some(d) = pb.dataForType(t) {
+                    if let Some(d) = pb.dataForType(&*t) {
                         blocks.push(map_block(&t_str, d.to_vec()));
                     }
                 }

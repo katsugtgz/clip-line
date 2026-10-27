@@ -164,7 +164,10 @@ unsafe fn write_blocks(pb: &NSPasteboard, blocks: &[Block]) -> anyhow::Result<()
 unsafe fn file_item(url: &str) -> objc2::rc::Retained<NSPasteboardItem> {
     unsafe {
         let item = NSPasteboardItem::new();
-        item.setString_forType(&NSString::from_str(url), "public.file-url");
+        item.setString_forType(
+            &NSString::from_str(url),
+            &NSString::from_str("public.file-url"),
+        );
         item
     }
 }
