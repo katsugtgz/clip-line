@@ -16,6 +16,8 @@ pub struct Config {
 #[serde(default)]
 pub struct Storage {
     pub path: Option<std::path::PathBuf>,
+    /// Q14 phase 2: extra read/write history DBs, each shown as its own tab.
+    pub extra_dbs: Vec<std::path::PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -7,7 +7,11 @@
 mod main;
 
 use clip_line_core::paste::PasteMode;
-use main::{date_range_strings, latest_if_newer, parse_hotkey, parse_latest_tag, parse_mode, t};
+use main::{
+    Tab, date_range_strings, latest_if_newer, parse_hotkey, parse_latest_tag, parse_mode, t,
+    tab_label,
+};
+use std::path::PathBuf;
 
 #[test]
 fn hotkey_strings_parse_to_mod_bits_and_vkey() {
@@ -132,4 +136,21 @@ fn latest_tag_flagged_only_when_newer() {
         "older tag is not an update"
     );
     assert_eq!(latest_if_newer("0.2.0", "{}"), None);
+}
+
+#[test]
+fn extra_tab_labels_use_file_stem() {
+    let extras = [
+        PathBuf::from(r"C:\dbs\work-history.db"),
+        PathBuf::from("/home/u/arch.sdb"),
+        // stemless (dotfile) falls back to the full file name
+        PathBuf::from("/tmp/.clips"),
+    ];
+    assert_eq!(tab_label("History", &extras, Tab::History), "History");
+    assert_eq!(tab_label("History", &extras, Tab::Extra(0)), "work-history");
+    assert_eq!(tab_label("History", &extras, Tab::Extra(1)), "arch");
+    assert_eq!(tab_label("History", &extras, Tab::Extra(2)), ".clips");
+    assert_eq!(tab_label("History", &extras, Tab::Snippets), "Snippets");
+    // out-of-range index (config changed at runtime) → safe fallback
+    assert_eq!(tab_label("History", &extras, Tab::Extra(9)), "extra");
 }
