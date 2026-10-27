@@ -154,3 +154,31 @@ path = 'x.db'
     let c = Config::load(&p).unwrap();
     assert!(c.storage.extra_dbs.is_empty());
 }
+
+#[test]
+fn hotkeys_nonprintable_keys_survive_import() {
+    // cubic 6693: Up/Space/Enter/Escape were silently dropped at import.
+    let got = parse_hotkeys_list("1,6,38;2,0,32;3,2,13;4,4,27;");
+    assert_eq!(got.len(), 4, "{got:?}");
+    assert_eq!(got[0].display, "Ctrl+Shift+Up");
+    assert_eq!(got[1].display, "Space");
+    assert_eq!(got[2].display, "Ctrl+Enter");
+    assert_eq!(got[3].display, "Shift+Escape");
+}
+
+#[test]
+fn hotkeys_slot_outside_13_rejected() {
+    // cubic 6682: slot 0/14+ is corrupt data and must not shadow a real slot.
+    let got = parse_hotkeys_list("0,6,86;14,2,86;1,2,86;");
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].slot, 1);
+}
+
+#[test]
+fn legacy_ini_ignores_hotkeyslist_outside_options() {
+    // cubic 6166: a duplicate key in another section must not win.
+    let p = tmp("ini-section", "clipdiary.cfg", "[Whatever]\nHotKeysList=9,2,86;\n[Options]\nHotKeysList=1,6,86;\n");
+    let got = import_legacy_ini(&p).unwrap();
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].slot, 1, "only [Options] supplies the hotkeys list");
+}
