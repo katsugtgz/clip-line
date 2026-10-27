@@ -44,8 +44,8 @@ mod cg {
     /// True when this process may post CGEvents (Accessibility granted).
     /// CGEventPost has no return value, so this is the only way to detect a
     /// missing permission instead of reporting a silent no-op as success.
-    pub unsafe fn ax_trusted() -> bool {
-        AXIsProcessTrusted()
+    pub fn ax_trusted() -> bool {
+        unsafe { AXIsProcessTrusted() }
     }
 }
 
@@ -92,7 +92,7 @@ pub fn block_to_ns_type(b: &Block) -> Option<(String, Vec<u8>)> {
             // UTF-16LE (may contain embedded NULs) — decode first.
             Some((
                 "public.utf8-plain-text".into(),
-                decode_utf16(&b.bytes).into_bytes(),
+                String::from_utf16_lossy(&decode_utf16(&b.bytes)).into_bytes(),
             ))
         }
         Format::ImageDib | Format::ImageDibV5 => {

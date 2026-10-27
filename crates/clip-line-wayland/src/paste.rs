@@ -101,7 +101,7 @@ pub fn set_clipboard(blocks: &[Block]) -> anyhow::Result<()> {
     if sources.is_empty() {
         anyhow::bail!("no blocks with a Wayland-representable format");
     }
-    let opts = copy::Options::new();
+    let mut opts = copy::Options::new();
     opts.serve_requests(ServeRequests::Unlimited);
     opts.copy_multi(sources)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
