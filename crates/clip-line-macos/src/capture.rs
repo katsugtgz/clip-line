@@ -118,10 +118,14 @@ pub fn string_to_utf16_bytes(s: &str) -> Vec<u8> {
 /// Split a UTF-16LE NUL-separated file-URL list into Strings (storage form
 /// written by `read_file_urls`; consumed by the paster).
 pub fn file_urls_from_bytes(bytes: &[u8]) -> Vec<String> {
-    utf16_bytes_to_string(bytes)
-        .split('\0')
+    let units: Vec<u16> = bytes
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .collect();
+    units
+        .split(|&u| u == 0)
         .filter(|s| !s.is_empty())
-        .map(str::to_string)
+        .map(|s| String::from_utf16_lossy(s))
         .collect()
 }
 

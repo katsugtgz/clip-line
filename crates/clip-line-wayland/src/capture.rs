@@ -220,6 +220,6 @@ mod tests {
         // cubic 6187: trailing CRLF is payload; only the wide NUL terminator
         // is added.
         let b = to_win_text("line\r\n");
-        assert_eq!(b.len(), 8, "CRLF kept + wide NUL");
+        assert_eq!(b.len(), 14, "CRLF kept + wide NUL");
     }
 }
