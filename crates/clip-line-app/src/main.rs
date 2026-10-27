@@ -654,6 +654,9 @@ struct App {
     snip_name: String,
     snip_data: String,
     rename: Option<(i64, String)>,
+    labels_open: bool,
+    labels: Vec<String>,
+    label_edit: Option<(String, String)>, // (tag, draft)
     // Global show/hide toggle (SPEC "ui": global-hotkey + tray-icon).
     gh_manager: Option<global_hotkey::GlobalHotKeyManager>,
     gh_show: Option<global_hotkey::hotkey::HotKey>,
@@ -693,6 +696,9 @@ impl App {
             snip_name: String::new(),
             snip_data: String::new(),
             rename: None,
+            labels_open: false,
+            labels: Vec::new(),
+            label_edit: None,
             gh_manager: None,
             gh_show: None,
             window_visible: true,
@@ -1044,6 +1050,79 @@ impl App {
         r
     }
 
+    fn reload_labels(&mut self) {
+        match self.store.tag_list() {
+            Ok(v) => self.labels = v,
+            Err(e) => self.status = format!("tags: {e}"),
+        }
+    }
+
+    /// Labels manager popup (story 12): list all tags, rename or delete.
+    fn labels_ui(&mut self, ctx: &egui::Context) {
+        let mut open = self.labels_open;
+        egui::Window::new(t("Labels"))
+            .open(&mut open)
+            .resizable(false)
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical()
+                    .max_height(300.0)
+                    .show(ui, |ui| {
+                        if self.labels.is_empty() {
+                            ui.weak(t("No labels"));
+                        }
+                        for tag in self.labels.clone() {
+                            let mut editing = false;
+                            ui.horizontal(|ui| {
+                                if ui.button("x").clicked() {
+                                    // ponytail: no confirm — bulk delete is recoverable
+                                    // by re-tagging rows; add undo when store grows it.
+                                    if let Err(e) = self.store.tag_delete(&tag) {
+                                        self.status = format!("tag_delete: {e}");
+                                    }
+                                    self.dirty = true;
+                                    self.reload_labels();
+                                    return;
+                                }
+                                if let Some((t0, draft)) = self.label_edit.clone() {
+                                    if t0 == tag {
+                                        editing = true;
+                                        let mut d = draft.clone();
+                                        let r = ui.text_edit_singleline(&mut d);
+                                        if r.changed() {
+                                            self.label_edit = Some((tag.clone(), d));
+                                        }
+                                        if ui.button(t("Apply")).clicked() {
+                                            let new = draft.trim().to_string();
+                                            if !new.is_empty() {
+                                                if let Err(e) = self.store.tag_rename(&tag, &new) {
+                                                    self.status = format!("tag_rename: {e}");
+                                                }
+                                            }
+                                            self.label_edit = None;
+                                            self.dirty = true;
+                                            self.reload_labels();
+                                        }
+                                        if ui.button(t("Cancel")).clicked() {
+                                            self.label_edit = None;
+                                        }
+                                    }
+                                }
+                                if !editing {
+                                    ui.label(&tag);
+                                }
+                                if !editing
+                                    && ui.button(t("Rename")).clicked()
+                                    && self.label_edit.is_none()
+                                {
+                                    self.label_edit = Some((tag.clone(), tag.clone()));
+                                }
+                            });
+                        }
+                    });
+            });
+        self.labels_open = open;
+    }
+
     fn history_ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         let n = self.rows.len();
@@ -1260,6 +1339,12 @@ impl eframe::App for App {
                     if ui.checkbox(&mut self.starred_only, t("Starred")).changed() {
                         self.dirty = true;
                     }
+                    if ui.button(t("Labels")).clicked() {
+                        self.labels_open = !self.labels_open;
+                        if self.labels_open {
+                            self.reload_labels();
+                        }
+                    }
                     let kinds = [t("All"), t("Text"), t("Url"), t("Files"), t("Image")];
                     let cr = egui::ComboBox::from_id_salt("kind")
                         .selected_text(kinds[self.kind_sel.min(4)])
@@ -1302,6 +1387,9 @@ impl eframe::App for App {
                 }
             });
         });
+        if self.labels_open {
+            self.labels_ui(ui.ctx());
+        }
         egui::CentralPanel::default().show(ui, |ui| match self.tab {
             Tab::History => self.history_ui(ui),
             Tab::Snippets => self.snippets_ui(ui),

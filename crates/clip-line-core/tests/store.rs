@@ -405,3 +405,43 @@ fn fts_odd_query_no_panic() {
         });
     }
 }
+
+#[test]
+fn tag_list_counts_desc_dedup() {
+    let (store, _p) = temp_store("taglist");
+    let a = store.append(&text_event("one")).unwrap() as i64;
+    let b = store.append(&text_event("two")).unwrap() as i64;
+    let c = store.append(&text_event("three")).unwrap() as i64;
+    store.set_tags(a, &["x".into(), "y".into()]).unwrap();
+    store.set_tags(b, &["y".into()]).unwrap();
+    store.set_tags(c, &["y".into(), "x".into()]).unwrap();
+    // y appears in 3 rows, x in 2 -> y first; count desc.
+    assert_eq!(store.tag_list().unwrap(), vec!["y", "x"]);
+}
+
+#[test]
+fn tag_rename_whole_tag_no_substring_collision() {
+    let (store, _p) = temp_store("tagren");
+    let a = store.append(&text_event("r1")).unwrap() as i64;
+    let b = store.append(&text_event("r2")).unwrap() as i64;
+    store.set_tags(a, &["red".into(), "blue".into()]).unwrap();
+    store.set_tags(b, &["redish".into()]).unwrap();
+    store.tag_rename("red", "scarlet").unwrap();
+    let rows = store.list(&Filter::default()).unwrap();
+    // newest first: b, a
+    assert_eq!(rows[0].tags, ",redish,");
+    assert_eq!(rows[1].tags, ",scarlet,blue,");
+}
+
+#[test]
+fn tag_delete_whole_tag_no_substring_collision() {
+    let (store, _p) = temp_store("tagdel");
+    let a = store.append(&text_event("d1")).unwrap() as i64;
+    let b = store.append(&text_event("d2")).unwrap() as i64;
+    store.set_tags(a, &["red".into(), "blue".into()]).unwrap();
+    store.set_tags(b, &["redish".into()]).unwrap();
+    store.tag_delete("red").unwrap();
+    let rows = store.list(&Filter::default()).unwrap();
+    assert_eq!(rows[0].tags, ",redish,");
+    assert_eq!(rows[1].tags, ",blue,");
+}

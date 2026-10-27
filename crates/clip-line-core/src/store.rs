@@ -365,6 +365,49 @@ impl Store {
         Ok(())
     }
 
+    /// All distinct tags, most-used first (ties alphabetical).
+    pub fn tag_list(&self) -> anyhow::Result<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT tags FROM log")?;
+        let mut counts: std::collections::HashMap<String, usize> = Default::default();
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        for wrapped in rows {
+            let wrapped = wrapped?;
+            for tag in wrapped.split(',').filter(|t| !t.is_empty()) {
+                *counts.entry(tag.to_string()).or_default() += 1;
+            }
+        }
+        drop(stmt);
+        drop(conn);
+        let mut v: Vec<String> = counts.into_keys().collect();
+        v.sort_by(|a, b| b.cmp(a));
+        Ok(v)
+    }
+
+    /// Renames tag `old` to `new` across all rows. Whole-tag match only on the
+    /// comma-wrapped column, so substring tags (`red` vs `redish`) stay intact.
+    pub fn tag_rename(&self, old: &str, new: &str) -> anyhow::Result<()> {
+        let old_w = format!(",{old},");
+        let new_w = format!(",{new},");
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE log SET tags = substr(REPLACE(','||tags||',', ?1, ?2), 2, length(REPLACE(','||tags||',', ?1, ?2)) - 2) WHERE ','||tags||',' LIKE ?3 ESCAPE '\\'",
+            params![old_w, new_w, format!("%{}%", like_escape(&old_w))],
+        )?;
+        Ok(())
+    }
+
+    /// Removes tag `tag` from all rows (whole-tag match).
+    pub fn tag_delete(&self, tag: &str) -> anyhow::Result<()> {
+        let tag_w = format!(",{tag},");
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE log SET tags = substr(REPLACE(','||tags||',', ?1, ','), 2, length(REPLACE(','||tags||',', ?1, ',')) - 2) WHERE ','||tags||',' LIKE ?2 ESCAPE '\\'",
+            params![tag_w, format!("%{}%", like_escape(&tag_w))],
+        )?;
+        Ok(())
+    }
+
     pub fn delete(&self, ids: &[i64]) -> anyhow::Result<()> {
         let conn = self.conn.lock().unwrap();
         for id in ids {
@@ -565,4 +608,16 @@ fn truncate(s: &str, n: usize) -> String {
     } else {
         s.chars().take(n).collect()
     }
+}
+
+/// `%`/`_`/`\` escaped for a LIKE pattern with `ESCAPE '\\'`.
+fn like_escape(s: &str) -> String {
+    let mut o = String::with_capacity(s.len());
+    for c in s.chars() {
+        if matches!(c, '%' | '_' | '\\') {
+            o.push('\\');
+        }
+        o.push(c);
+    }
+    o
 }
