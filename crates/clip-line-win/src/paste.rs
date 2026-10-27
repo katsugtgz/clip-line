@@ -3,14 +3,17 @@
 use clip_line_core::capture::{Block, Format};
 use clip_line_core::paste::{ClipData, PasteMode, Paster};
 use windows::Win32::Foundation::{HANDLE, HGLOBAL};
+use windows::Win32::Globalization::{CP_ACP, MultiByteToWideChar};
 use windows::Win32::System::DataExchange::{
-    CloseClipboard, EmptyClipboard, GetClipboardSequenceNumber, OpenClipboard, SetClipboardData,
+    CloseClipboard, EmptyClipboard, GetClipboardSequenceNumber, OpenClipboard,
+    RegisterClipboardFormatW, SetClipboardData,
 };
 use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, SendInput,
     VIRTUAL_KEY,
 };
+use windows::core::PCWSTR;
 
 /// GlobalFree is not exposed by the windows 0.62 crate; declare it directly.
 #[allow(non_snake_case)]
@@ -40,11 +43,18 @@ impl WinPaster {
 
 impl Paster for WinPaster {
     fn paste(&self, data: &ClipData, mode: PasteMode) -> anyhow::Result<()> {
+        // TypeIn overwrites the clipboard although it never reads it back;
+        // validate its text-only precondition first so a failed attempt does
+        // not also destroy the current clipboard contents (cubic 6311).
+        let typed = match mode {
+            PasteMode::TypeIn => Some(type_in_units(data)?),
+            _ => None,
+        };
         set_clipboard(&data.blocks)?;
         match mode {
             PasteMode::SetOnly => Ok(()),
             PasteMode::InjectCtrlV => inject_ctrl_v(),
-            PasteMode::TypeIn => type_in(data),
+            PasteMode::TypeIn => send_units(&typed.unwrap()),
         }
     }
 }
@@ -92,7 +102,17 @@ unsafe fn set_block(b: &Block) -> anyhow::Result<()> {
             Format::ImageDib => (8, b.bytes.clone()),
             Format::ImageDibV5 => (17, b.bytes.clone()),
             Format::FileDrop => (15, build_hdrop(&file_list(b)?)),
-            Format::Registered(id, _) => (*id, b.bytes.clone()),
+            Format::Registered(_, name) => {
+                // Stored ids are machine-local (X11 hash / foreign machine's
+                // registration); 2 would be CF_BITMAP and 0 is invalid.
+                // Windows resolves the name to this machine's atom.
+                let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+                let fmt = RegisterClipboardFormatW(PCWSTR::from_raw(wide.as_ptr()));
+                if fmt == 0 {
+                    anyhow::bail!("RegisterClipboardFormatW failed for {name:?}");
+                }
+                (fmt, b.bytes.clone())
+            }
         };
         let h = GlobalAlloc(GMEM_MOVEABLE, bytes.len())?;
         let p = GlobalLock(h);
@@ -130,25 +150,112 @@ fn file_list(b: &Block) -> anyhow::Result<Vec<String>> {
         .bytes
         .get(16..20)
         .map(|s| u32::from_le_bytes(s.try_into().unwrap()));
-    // Valid DROPFILES: 20 <= pFiles <= len, fWide == 1 (we only write wide).
-    let start = if (20..=b.bytes.len()).contains(&p_files) && f_wide == Some(1) {
-        p_files
-    } else {
-        0
-    };
-    let units: Vec<u16> = b.bytes[start..]
+    // Valid DROPFILES: 20 <= pFiles <= len (fWide selects the encoding).
+    // Anything else: a raw headerless WIDE list (our own storage form).
+    if (20..=b.bytes.len()).contains(&p_files) {
+        let body = &b.bytes[p_files..];
+        if f_wide == Some(1) {
+            let units: Vec<u16> = body
+                .chunks_exact(2)
+                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .collect();
+            // The list ends at the first empty (double-NUL) segment: bytes
+            // after it are allocation padding, not paths.
+            let segs: Vec<Vec<u16>> = units
+                .split(|&u| u == 0)
+                .take_while(|s| !s.is_empty())
+                .map(|s| s.to_vec())
+                .collect();
+            return Ok(decode_segments(&segs));
+        }
+        if f_wide == Some(0) {
+            let segs: Vec<&[u8]> = body
+                .split(|&c| c == 0)
+                .take_while(|s| !s.is_empty())
+                .collect();
+            let wide: Vec<Vec<u16>> = segs.iter().map(|s| unsafe { ansi_to_wide(s) }).collect();
+            return Ok(decode_segments(&wide));
+        }
+    }
+    let units: Vec<u16> = b
+        .bytes
         .chunks_exact(2)
         .map(|c| u16::from_le_bytes([c[0], c[1]]))
         .collect();
     let list: Vec<String> = units
         .split(|&u| u == 0)
+        .take_while(|s| !s.is_empty())
         .filter(|s| !s.is_empty())
         .map(String::from_utf16_lossy)
         .collect();
     if list.is_empty() {
         anyhow::bail!("file-drop block has no paths");
     }
-    Ok(list)
+    list.into_iter().map(file_url_to_path).collect()
+}
+
+/// Local `file://` URL -> path; plain paths pass through; anything else
+/// (http, remote) is rejected (CF_HDROP carries local paths only).
+fn file_url_to_path(p: String) -> anyhow::Result<String> {
+    if let Some(rest) = p.strip_prefix("file://") {
+        let path = rest.strip_prefix("localhost/").unwrap_or(rest);
+        let path = percent_decode(path)?;
+        let path = if cfg!(windows) {
+            path.strip_prefix('/').map(str::to_string).unwrap_or(path)
+        } else {
+            path
+        };
+        if path.is_empty() {
+            anyhow::bail!("empty file URL");
+        }
+        return Ok(path);
+    }
+    if p.contains("://") {
+        anyhow::bail!("not a local file path: {p}");
+    }
+    Ok(p)
+}
+
+/// Percent-decode (%41 -> A, %20 -> space); invalid escapes left verbatim.
+fn percent_decode(s: &str) -> anyhow::Result<String> {
+    let b = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            let hex = std::str::from_utf8(&b[i + 1..i + 3])?;
+            if let Ok(v) = u8::from_str_radix(hex, 16) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    Ok(String::from_utf8_lossy(&out).into_owned())
+}
+
+/// ANSI bytes -> UTF-16 via the active Windows code page (for CF_HDROP
+/// payloads written with fWide == 0).
+unsafe fn ansi_to_wide(bytes: &[u8]) -> Vec<u16> {
+    unsafe {
+        let n = MultiByteToWideChar(CP_ACP, Default::default(), bytes, None);
+        if n <= 0 {
+            return Vec::new();
+        }
+        let mut buf = vec![0u16; n as usize];
+        MultiByteToWideChar(CP_ACP, Default::default(), bytes, Some(&mut buf));
+        buf
+    }
+}
+
+/// NUL-separated wide entries -> paths.
+fn decode_segments(seg: &[Vec<u16>]) -> Vec<String> {
+    seg.iter()
+        .filter(|s| !s.is_empty())
+        .map(|s| String::from_utf16_lossy(s))
+        .collect()
 }
 
 #[repr(C)]
@@ -208,12 +315,17 @@ fn build_type_inputs(units: &[u16]) -> Vec<INPUT> {
 
 /// Type the clip's text as keystrokes (windows that reject Ctrl+V: consoles,
 /// elevated apps). Text clips only.
-fn type_in(data: &ClipData) -> anyhow::Result<()> {
+/// Validate the TypeIn precondition and extract the units to type.
+fn type_in_units(data: &ClipData) -> anyhow::Result<Vec<u16>> {
     let Some(tb) = data.blocks.iter().find(|b| b.format == Format::UnicodeText) else {
         anyhow::bail!("TypeIn supports text clips only");
     };
-    let units = decode_utf16(&tb.bytes);
-    let seq = build_type_inputs(&units);
+    Ok(decode_utf16(&tb.bytes))
+}
+
+/// Send the keystroke sequence (no clipboard write).
+fn send_units(units: &[u16]) -> anyhow::Result<()> {
+    let seq = build_type_inputs(units);
     if seq.is_empty() {
         return Ok(()); // empty string: nothing to type
     }
@@ -266,7 +378,7 @@ fn inject_ctrl_v() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_hdrop, build_type_inputs, decode_utf16, file_list};
+    use super::{build_hdrop, build_type_inputs, decode_utf16, file_list, file_url_to_path};
     use clip_line_core::capture::{Block, Format};
 
     #[test]
@@ -308,6 +420,38 @@ mod tests {
         // header sanity: pFiles=20, fWide=1
         assert_eq!(u32::from_le_bytes(payload[0..4].try_into().unwrap()), 20);
         assert_eq!(u32::from_le_bytes(payload[16..20].try_into().unwrap()), 1);
+    }
+
+    #[test]
+    fn file_list_stops_at_double_nul() {
+        // cubic 6291: allocation padding after the terminator must not
+        // surface as bogus paths.
+        let mut units: Vec<u16> = "C:\\real".encode_utf16().collect();
+        units.push(0);
+        units.push(0); // terminator
+        units.extend("C:\\PAD".encode_utf16());
+        let bytes: Vec<u8> = units.iter().flat_map(|u| u.to_le_bytes()).collect();
+        let files = file_list(&Block {
+            format: Format::FileDrop,
+            bytes,
+        })
+        .unwrap();
+        assert_eq!(files, vec!["C:\\real"]);
+    }
+
+    #[test]
+    fn file_urls_convert_to_local_paths() {
+        // cubic 6428: macOS-style file URLs must not ride into CF_HDROP raw.
+        assert_eq!(
+            file_url_to_path("file:///C:/a%20b.txt".into()).unwrap(),
+            "C:/a b.txt"
+        );
+        assert_eq!(
+            file_url_to_path("file://localhost/tmp/x".into()).unwrap(),
+            "tmp/x"
+        );
+        assert!(file_url_to_path("https://x.example".into()).is_err());
+        assert_eq!(file_url_to_path("C:\\plain".into()).unwrap(), "C:\\plain");
     }
 
     #[test]
