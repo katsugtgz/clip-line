@@ -118,3 +118,39 @@ fn legacy_ini_missing_keys_defaults_empty() {
     let hs = import_legacy_ini(&p).unwrap();
     assert!(hs.is_empty());
 }
+
+#[test]
+fn storage_extra_dbs_parse() {
+    let p = tmp(
+        "extra",
+        "clipline.toml",
+        r#"
+[storage]
+path = 'C:\History\diary.db'
+extra_dbs = ['C:\History\work.db', '/home/u/arch.sdb']
+"#,
+    );
+    let c = Config::load(&p).unwrap();
+    assert_eq!(c.storage.extra_dbs.len(), 2);
+    assert_eq!(
+        c.storage.extra_dbs[0],
+        std::path::PathBuf::from(r"C:\History\work.db")
+    );
+    assert_eq!(
+        c.storage.extra_dbs[1],
+        std::path::PathBuf::from("/home/u/arch.sdb")
+    );
+}
+
+#[test]
+fn storage_extra_dbs_default_empty() {
+    let p = tmp(
+        "extra-default",
+        "clipline.toml",
+        "[storage]
+path = 'x.db'
+",
+    );
+    let c = Config::load(&p).unwrap();
+    assert!(c.storage.extra_dbs.is_empty());
+}

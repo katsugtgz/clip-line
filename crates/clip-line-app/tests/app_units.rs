@@ -9,8 +9,9 @@ mod main;
 use clip_line_core::paste::PasteMode;
 use main::{
     backup_stamp, date_range_strings, latest_if_newer, parse_hotkey, parse_latest_tag, parse_mode,
-    t,
+    t, tab_label, Tab,
 };
+use std::path::PathBuf;
 
 #[test]
 fn hotkey_strings_parse_to_mod_bits_and_vkey() {
@@ -144,4 +145,22 @@ fn backup_stamp_formats_epoch() {
     assert_eq!(backup_stamp(1_793_059_200), "20261027-000000");
     // 2024-02-29T23:59:59Z — leap day boundary
     assert_eq!(backup_stamp(1_709_251_199), "20240229-235959");
+}
+
+#[test]
+fn extra_tab_labels_use_file_stem() {
+    let extras = [
+        PathBuf::from(r"C:\dbs\work-history.db"),
+        PathBuf::from("/home/u/arch.sdb"),
+        // stemless (dotfile) falls back to the full file name
+        PathBuf::from("/tmp/.clips"),
+    ];
+    assert_eq!(tab_label("History", &extras, Tab::History), "History");
+    assert_eq!(tab_label("History", &extras, Tab::Extra(0)), "work-history");
+    assert_eq!(tab_label("History", &extras, Tab::Extra(1)), "arch");
+    assert_eq!(tab_label("History", &extras, Tab::Extra(2)), ".clips");
+    assert_eq!(tab_label("History", &extras, Tab::Snippets), "Snippets");
+    // out-of-range index (config changed at runtime) → safe fallback
+    assert_eq!(tab_label("History", &extras, Tab::Extra(9)), "extra");
+}
 }

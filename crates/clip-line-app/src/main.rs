@@ -453,7 +453,7 @@ fn main() -> anyhow::Result<()> {
         "clipLine",
         opts,
         Box::new(move |_cc| {
-            let mut app = App::new(store, &cfg, suppress, db);
+            let mut app = App::new(store, &cfg, cfg.storage.extra_dbs.clone(), suppress, db);
             if extras.update.check_on_start {
                 let tx = app.update_tx();
                 app.spawn_update_check(tx);
@@ -660,14 +660,33 @@ fn capture_loop<C: clip_line_core::capture::Capture>(
     }
 }
 
+/// Q14 phase 2: History tab generalized to the main DB plus any number of
+/// extra DBs from `[storage] extra_dbs`; each extra renders the same
+/// virtualized table backed by its own Store (lazily opened).
 #[derive(PartialEq, Clone, Copy)]
-enum Tab {
+pub enum Tab {
     History,
+    Extra(usize),
     Snippets,
+}
+
+/// Tab label: "History" for main, file stem for extras (stemless → filename).
+pub fn tab_label(main: &str, extras: &[PathBuf], tab: Tab) -> String {
+    match tab {
+        Tab::History => main.to_string(),
+        Tab::Snippets => "Snippets".into(),
+        Tab::Extra(i) => extras
+            .get(i)
+            .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
+            .unwrap_or_else(|| "extra".into()),
+    }
 }
 
 struct App {
     store: Arc<Store>,
+    /// Extra DB paths from `[storage] extra_dbs`; lazily opened stores.
+    /// ponytail: per-tab filters persistence + import-into-main when asked.
+    extra_stores: Vec<(PathBuf, Option<Arc<Store>>)>,
     suppress: SuppressSlot,
     mode: PasteMode,
     hide_after_ms: u64,
@@ -711,13 +730,20 @@ struct App {
 }
 
 impl App {
-    fn new(store: Arc<Store>, cfg: &Config, suppress: SuppressSlot, db_path: PathBuf) -> Self {
+    fn new(
+        store: Arc<Store>,
+        cfg: &Config,
+        extra_dbs: Vec<PathBuf>,
+        suppress: SuppressSlot,
+        db_path: PathBuf,
+    ) -> Self {
         let (update_tx, update_rx) = std::sync::mpsc::channel::<String>();
         App {
             mode: parse_mode(&cfg.paste.default_mode),
             hide_after_ms: cfg.ui.hide_after_ms,
             show_gen: Arc::new(AtomicU64::new(0)),
             store,
+            extra_stores: extra_dbs.into_iter().map(|p| (p, None)).collect(),
             suppress,
             tab: Tab::History,
             query: String::new(),
@@ -752,6 +778,25 @@ impl App {
             db_path: db_path.clone(),
             backup_on_exit: cfg.storage.backup_on_exit,
         }
+    }
+
+    /// Store for the active tab (main DB for History, its own for extras).
+    /// Opens an extra DB lazily on first visit; failure surfaces in the footer
+    /// and the tab stays (empty) rather than killing the app.
+    fn active_store(&mut self) -> Option<&Arc<Store>> {
+        let i = match self.tab {
+            Tab::History | Tab::Snippets => return Some(&self.store),
+            Tab::Extra(i) => i,
+        };
+        let slot = self.extra_stores.get_mut(i)?;
+        if slot.1.is_none() {
+            let path = slot.0.clone();
+            match Store::open(&path, StoreOpts::default()) {
+                Ok(st) => slot.1 = Some(Arc::new(st)),
+                Err(e) => self.status = format!("extra db: {e}"),
+            }
+        }
+        slot.1.as_ref()
     }
 
     /// Q11 update check, off-thread; result lands in the footer, never a modal.
@@ -968,14 +1013,17 @@ impl App {
                 limit: 500,
                 ..Default::default()
             };
-            match self.store.list(&f) {
-                Ok(rows) => {
-                    if self.selected.is_some_and(|s| s >= rows.len()) {
-                        self.selected = rows.len().checked_sub(1);
+            match self.active_store().cloned() {
+                Some(store) => match store.list(&f) {
+                    Ok(rows) => {
+                        if self.selected.is_some_and(|s| s >= rows.len()) {
+                            self.selected = rows.len().checked_sub(1);
+                        }
+                        self.rows = rows;
                     }
-                    self.rows = rows;
-                }
-                Err(e) => self.status = format!("list: {e}"),
+                    Err(e) => self.status = format!("list: {e}"),
+                },
+                None => self.rows.clear(), // broken extra DB: empty tab, not a crash
             }
             if self.tab == Tab::Snippets {
                 self.reload_snips();
@@ -1041,7 +1089,7 @@ impl App {
             }
         });
         if let Some(n) = quick {
-            if self.tab == Tab::History {
+            if matches!(self.tab, Tab::History | Tab::Extra(_)) {
                 if let Some(r) = self.rows.get(n).cloned() {
                     let mode = self.mode;
                     self.paste_row(ctx, r.id, mode, false);
@@ -1088,7 +1136,10 @@ impl App {
     }
 
     fn do_paste(&mut self, id: i64, mode: PasteMode, plain: bool) -> anyhow::Result<()> {
-        let mut blocks = self.store.load_data(id)?;
+        let mut blocks = self
+            .active_store()
+            .ok_or_else(|| anyhow::anyhow!("no store for this tab"))?
+            .load_data(id)?;
         if plain {
             blocks.retain(|b| b.format == clip_line_core::Format::UnicodeText);
             if blocks.is_empty() {
@@ -1201,7 +1252,9 @@ impl App {
                     row.col(|ui| {
                         let star = if r.starred { "\u{2605}" } else { "\u{2606}" };
                         if ui.label(star).clicked() {
-                            let _ = self.store.set_star(r.id, !r.starred);
+                            if let Some(st) = self.active_store() {
+                                let _ = st.set_star(r.id, !r.starred);
+                            }
                             self.dirty = true;
                         }
                     });
@@ -1253,12 +1306,16 @@ impl App {
                             .button(if r.starred { t("Unstar") } else { t("Star") })
                             .clicked()
                         {
-                            let _ = self.store.set_star(r.id, !r.starred);
+                            if let Some(st) = self.active_store() {
+                                let _ = st.set_star(r.id, !r.starred);
+                            }
                             self.dirty = true;
                             ui.close();
                         }
                         if ui.button(t("Delete")).clicked() {
-                            let _ = self.store.delete(&[r.id]);
+                            if let Some(st) = self.active_store() {
+                                let _ = st.delete(&[r.id]);
+                            }
                             self.dirty = true;
                             ui.close();
                         }
@@ -1387,7 +1444,7 @@ impl eframe::App for App {
                 ui.selectable_value(&mut self.tab, Tab::Snippets, t("Snippets"));
             });
         });
-        if self.tab == Tab::History {
+        if matches!(self.tab, Tab::History | Tab::Extra(_)) {
             egui::Panel::top("filter").show(ui, |ui| {
                 ui.horizontal(|ui| {
                     let r = ui.add(
@@ -1465,7 +1522,7 @@ impl eframe::App for App {
             self.labels_ui(ui.ctx());
         }
         egui::CentralPanel::default().show(ui, |ui| match self.tab {
-            Tab::History => self.history_ui(ui),
+            Tab::History | Tab::Extra(_) => self.history_ui(ui),
             Tab::Snippets => self.snippets_ui(ui),
         });
     }

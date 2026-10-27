@@ -19,6 +19,8 @@ pub struct Storage {
     /// Back up the main DB on app exit (SPEC phase 4). Default false.
     #[serde(default)]
     pub backup_on_exit: bool,
+    /// Q14 phase 2: extra read/write history DBs, each shown as its own tab.
+    pub extra_dbs: Vec<std::path::PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
