@@ -673,7 +673,6 @@ fn paste_on_this_os(data: &ClipData, mode: PasteMode) -> anyhow::Result<()> {
 }
 
 /// Shared drain loop: skip self-writes, persist foreign events, report fatal loss.
-
 fn capture_loop<C: clip_line_core::capture::Capture>(
     cap: &mut C,
     store: Arc<Store>,
