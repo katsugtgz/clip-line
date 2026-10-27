@@ -3,76 +3,272 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#fbfaf8" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#15171c" media="(prefers-color-scheme: dark)">
 <title>clipLine — open-source clipboard history</title>
 <meta name="description" content="Fast, open-source clipboard history manager for Windows, Linux and macOS. Rust + SQLite.">
 <style>
-  :root { color-scheme: light dark; }
+  :root {
+    color-scheme: light dark;
+    --bg: #fbfaf8;
+    --panel: #ffffff;
+    --fg: #23262b;
+    --dim: #5b5f66;
+    --line: #e3e1dc;
+    --accent: #a03e12;
+    --accent-ink: #ffffff;
+    --tint: rgba(160, 62, 18, .09);
+    --mono: ui-monospace, "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+    --serif: "Iowan Old Style", "Palatino Linotype", Charter, Georgia, serif;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #15171c;
+      --panel: #1d2026;
+      --fg: #e8e6e1;
+      --dim: #a0a5ad;
+      --line: #2c3038;
+      --accent: #e08a63;
+      --accent-ink: #241310;
+      --tint: rgba(224, 138, 99, .14);
+    }
+  }
+
   * { box-sizing: border-box; }
-  body { font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; margin: 0; }
-  .wrap { max-width: 880px; margin: 0 auto; padding: 2.5rem 1.25rem 4rem; }
-  .hero { display: flex; flex-wrap: wrap; gap: 1.5rem; align-items: center; }
-  .hero h1 { font-size: 2.4rem; margin: 0 0 .25rem; }
-  .hero p { margin: .25rem 0 0; font-size: 1.1rem; opacity: .85; }
-  .logo { width: 84px; height: 84px; flex: none; }
-  .cta { display: flex; gap: .75rem; flex-wrap: wrap; margin: 1.5rem 0; }
-  .cta a { text-decoration: none; padding: .6rem 1.1rem; border-radius: 10px; font-weight: 600; }
-  .cta .primary { background: #2563eb; color: #fff; }
-  .cta .ghost { border: 1px solid currentColor; }
-  img.shot { width: 100%; border-radius: 12px; border: 1px solid rgba(127,127,127,.35); margin: 1rem 0 2rem; }
-  h2 { margin-top: 2.5rem; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1rem; }
-  .card { border: 1px solid rgba(127,127,127,.35); border-radius: 12px; padding: 1rem 1.1rem; }
-  .card h3 { margin: 0 0 .4rem; font-size: 1.05rem; }
-  .card p { margin: 0; font-size: .95rem; opacity: .85; }
-  code, pre { font: .9rem/1.5 ui-monospace, "Cascadia Code", Consolas, monospace; }
-  pre { background: rgba(127,127,127,.12); padding: 1rem; border-radius: 10px; overflow: auto; }
-  footer { margin-top: 4rem; opacity: .7; font-size: .9rem; }
+  html { accent-color: var(--accent); }
+  body {
+    font: 1rem/1.65 var(--sans);
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+  }
+  ::selection { background: var(--tint); }
+  a { color: var(--accent); }
+  a:focus-visible, .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .wrap { max-width: 46rem; margin-inline: auto; padding: 2.5rem 1.25rem 4rem; }
+
+  /* header */
+  .top { display: flex; align-items: center; gap: .65rem; flex-wrap: wrap; }
+  .top .logo { inline-size: 1.75rem; block-size: 1.75rem; }
+  .top .name { font-size: 1.1rem; font-weight: 650; letter-spacing: -.01em; }
+  .top nav { margin-inline-start: auto; display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; }
+  .btn {
+    text-decoration: none; font-weight: 600; padding: .55rem 1.05rem;
+    border-radius: 8px; border: 1px solid transparent;
+  }
+  .btn.primary { background: var(--accent); color: var(--accent-ink); }
+  .btn.primary:hover { filter: brightness(1.08); }
+  .btn.ghost { border-color: var(--line); color: var(--fg); }
+  .btn.ghost:hover { border-color: var(--dim); }
+  .top nav a.plain { color: var(--fg); text-decoration: none; font-weight: 550; }
+  .top nav a.plain:hover { color: var(--accent); }
+
+  /* hero */
+  h1 {
+    font: 700 clamp(2.1rem, 1.2rem + 4.5vw, 3.3rem)/1.12 var(--serif);
+    letter-spacing: -.015em;
+    margin: 3rem 0 0;
+    text-wrap: balance;
+  }
+  .lede {
+    font-size: 1.1rem; max-width: 38rem;
+    margin: 1rem 0 0; color: var(--dim);
+    text-wrap: pretty;
+  }
+
+  /* the history panel — hero centerpiece */
+  .panel {
+    margin: 2.25rem 0 0;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    overflow: clip;
+    font-size: .95rem;
+  }
+  .panel-head {
+    display: flex; justify-content: space-between; align-items: baseline; gap: 1rem;
+    padding: .65rem 1rem; border-block-end: 1px solid var(--line);
+    font-weight: 600;
+  }
+  .panel-head .count { font: .8rem var(--mono); color: var(--dim); font-variant-numeric: tabular-nums; }
+  .row {
+    display: grid;
+    grid-template-columns: 5.2rem minmax(4.5rem, max-content) 1fr;
+    gap: .35rem .9rem; align-items: baseline;
+    padding: .55rem 1rem;
+    border-block-end: 1px solid var(--line);
+    animation: land .45s ease both;
+    animation-delay: calc(var(--i) * 140ms + 250ms);
+  }
+  .row:last-of-type { border-block-end: 0; }
+  .row .time { font: .8rem var(--mono); color: var(--dim); font-variant-numeric: tabular-nums; }
+  .row .app {
+    font: .72rem var(--mono); color: var(--fg);
+    border: 1px solid var(--line); border-radius: 5px;
+    padding: .05rem .4rem; justify-self: start; white-space: nowrap;
+  }
+  .row .clip {
+    min-inline-size: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    overflow-wrap: anywhere;
+  }
+  .row .clip code { all: unset; font-family: var(--mono); font-size: .88em; }
+  .row.sel {
+    background: var(--tint);
+    box-shadow: inset 3px 0 0 var(--accent);
+  }
+  .row.sel .clip::after { content: "⏎"; font-family: var(--mono); color: var(--accent); margin-inline-start: .5ch; }
+  .keys {
+    display: flex; gap: 1.1rem; flex-wrap: wrap;
+    padding: .6rem 1rem; border-block-start: 1px solid var(--line);
+    font-size: .8rem; color: var(--dim);
+  }
+  .keys span { display: inline-flex; align-items: center; gap: .4rem; }
+  kbd {
+    font: .72rem var(--mono); color: var(--fg);
+    border: 1px solid var(--line); border-block-end-width: 2px;
+    border-radius: 4px; padding: 0 .35rem;
+  }
+  @keyframes land { from { opacity: 0; transform: translateY(-.4rem); } }
+
+  img.shot {
+    inline-size: 100%; display: block;
+    border: 1px solid var(--line); border-radius: 10px;
+    margin: 2.5rem 0 0;
+  }
+
+  /* sections */
+  h2 { font: 650 1.3rem/1.3 var(--sans); letter-spacing: -.01em; margin: 3.25rem 0 .75rem; }
+  section p { max-width: 42rem; text-wrap: pretty; }
+
+  dl.features { margin: 1.5rem 0 0; }
+  dl.features > div {
+    display: grid;
+    grid-template-columns: minmax(10rem, max-content) 1fr;
+    gap: .25rem 2rem;
+    padding-block: .9rem;
+    border-block-start: 1px solid var(--line);
+  }
+  dl.features > div:last-child { border-block-end: 1px solid var(--line); }
+  dl.features dt { font-weight: 650; }
+  dl.features dd { margin: 0; color: var(--dim); max-width: 34rem; }
+  @media (max-width: 34rem) {
+    dl.features > div { grid-template-columns: 1fr; gap: .15rem; }
+    .row { grid-template-columns: 1fr; gap: .2rem .6rem; }
+    .row .time { order: 3; }
+  }
+
+  pre {
+    font: .875rem/1.6 var(--mono);
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 1rem 1.1rem; overflow: auto;
+    scrollbar-gutter: stable;
+  }
+
+  footer { margin-block-start: 4rem; padding-block-start: 1.25rem; border-block-start: 1px solid var(--line); font-size: .875rem; color: var(--dim); }
+
+  @media (prefers-reduced-motion: reduce) {
+    .row { animation: none; }
+    .btn, .top nav a.plain { transition: none; }
+  }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <div class="hero">
+  <header class="top">
     <svg class="logo" viewBox="0 0 64 64" aria-label="clipLine logo">
-      <rect x="18" y="6" width="28" height="10" rx="3" fill="#2563eb"/>
-      <rect x="8" y="12" width="48" height="46" rx="6" fill="none" stroke="#2563eb" stroke-width="5"/>
+      <rect x="18" y="6" width="28" height="10" rx="3" fill="var(--accent)"/>
+      <rect x="8" y="12" width="48" height="46" rx="6" fill="none" stroke="var(--accent)" stroke-width="5"/>
       <path d="M20 30h24M20 40h24M20 50h14" stroke="currentColor" stroke-width="4" stroke-linecap="round"/>
     </svg>
-    <div>
-      <h1>clipLine</h1>
-      <p>Fast, open-source clipboard history for Windows, Linux and macOS. Rust + SQLite, local first.</p>
+    <span class="name">clipLine</span>
+    <nav>
+      <a class="plain" href="https://github.com/katsugtgz/clip-line">Source</a>
+      <a class="btn primary" href="https://github.com/katsugtgz/clip-line/releases">Download</a>
+    </nav>
+  </header>
+
+  <main>
+    <h1>Everything you copy, remembered.</h1>
+    <p class="lede">clipLine is a fast, open-source clipboard history for Windows, Linux and macOS.
+    Every snippet — text, links, images, files — lands in one searchable list, kept in a
+    single SQLite file on your machine.</p>
+
+    <div class="panel" role="img" aria-label="clipLine history panel: timestamped clips from the apps they came from, one selected with the keyboard, Enter pastes it">
+      <div class="panel-head">History <span class="count">128 items</span></div>
+      <div class="row" style="--i:0">
+        <span class="time">14:32:07</span><span class="app">firefox</span>
+        <span class="clip"><code>en.wikipedia.org/wiki/Clipboard_(computing)</code></span>
+      </div>
+      <div class="row" style="--i:1">
+        <span class="time">14:29:51</span><span class="app">VS Code</span>
+        <span class="clip"><code>fn watch_clipboard(pool: &amp;DbPool) -&gt; Result&lt;()&gt;</code></span>
+      </div>
+      <div class="row" style="--i:2">
+        <span class="time">14:27:03</span><span class="app">Word</span>
+        <span class="clip">Quarterly review — action items for the team</span>
+      </div>
+      <div class="row sel" style="--i:3">
+        <span class="time">14:26:40</span><span class="app">Explorer</span>
+        <span class="clip">invoice-2026-10.pdf</span>
+      </div>
+      <div class="row" style="--i:4">
+        <span class="time">14:19:12</span><span class="app">terminal</span>
+        <span class="clip"><code>cargo install --path crates/clip-line-app</code></span>
+      </div>
+      <div class="keys">
+        <span><kbd>↑</kbd><kbd>↓</kbd> select</span>
+        <span><kbd>Enter</kbd> paste</span>
+        <span><kbd>/</kbd> search</span>
+      </div>
     </div>
-  </div>
-  <div class="cta">
-    <a class="primary" href="https://github.com/katsugtgz/clip-line/releases">Download</a>
-    <a class="ghost" href="https://github.com/katsugtgz/clip-line">Source code</a>
-  </div>
 
-  <img class="shot" src="assets/screenshot.png" alt="clipLine main window showing clipboard history with types, timestamps and source apps">
+    <img class="shot" src="assets/screenshot.png" alt="clipLine main window showing clipboard history with types, timestamps and source apps">
 
-  <div class="grid">
-    <div class="card"><h3>Everything, captured</h3><p>Text, URLs, images and copied files land in one searchable history, tagged with the app that made them.</p></div>
-    <div class="card"><h3>Paste anywhere</h3><p>Put a clip back on the clipboard or inject Ctrl+V straight into the window you came from.</p></div>
-    <div class="card"><h3>Own your data</h3><p>One SQLite file in your config dir. No account, no cloud, no telemetry.</p></div>
-    <div class="card"><h3>Plays well</h3><p>Reads and extends an existing ClipDiary history database in place — format documented for anyone to adopt.</p></div>
-  </div>
+    <section aria-labelledby="what">
+      <h2 id="what">What it does</h2>
+      <dl class="features">
+        <div>
+          <dt>Everything captured</dt>
+          <dd>Text, URLs, images and copied files land in one searchable history, tagged with the app that made them.</dd>
+        </div>
+        <div>
+          <dt>Paste anywhere</dt>
+          <dd>Put a clip back on the clipboard or inject Ctrl+V straight into the window you came from.</dd>
+        </div>
+        <div>
+          <dt>Own your data</dt>
+          <dd>One SQLite file in your config directory. No account, no cloud, no telemetry.</dd>
+        </div>
+        <div>
+          <dt>ClipDiary compatible</dt>
+          <dd>Reads and extends an existing ClipDiary history database in place — format documented for anyone to adopt.</dd>
+        </div>
+      </dl>
+    </section>
 
-  <h2>Install</h2>
-  <pre>git clone https://github.com/katsugtgz/clip-line.git
+    <section aria-labelledby="install">
+      <h2 id="install">Install</h2>
+      <pre>git clone https://github.com/katsugtgz/clip-line.git
 cd clip-line
 cargo install --path crates/clip-line-app</pre>
-  <p>Or grab a prebuilt binary from the <a href="https://github.com/katsugtgz/clip-line/releases">releases page</a>.</p>
+      <p>Or grab a prebuilt binary from the <a href="https://github.com/katsugtgz/clip-line/releases">releases page</a>.
+      No GUI? Try it headless: <code>cargo run -p clip-line-app --bin clip-line-headless</code>.</p>
+    </section>
 
-  <h2>Try it without a GUI</h2>
-  <pre>cargo run -p clip-line-app --bin clip-line-headless</pre>
+    <section aria-labelledby="why">
+      <h2 id="why">Why clipLine exists</h2>
+      <p>The original ClipDiary is Windows-only and closed source. clipLine is a
+      clean-room, MIT-licensed rebuild of the same interaction model — history
+      list, search, stars, tags, snippets — that runs on every desktop OS. See
+      <a href="https://github.com/katsugtgz/clip-line/blob/main/docs/interop.md">docs/interop.md</a>
+      for the database format we keep compatible.</p>
+    </section>
+  </main>
 
-  <h2>Why clipLine</h2>
-  <p>The original ClipDiary is Windows-only and closed source. clipLine is a
-  clean-room, MIT-licensed rebuild of the same interaction model — history
-  list, search, stars, tags, snippets — that runs on every desktop OS. See
-  <a href="https://github.com/katsugtgz/clip-line/blob/main/docs/interop.md">docs/interop.md</a>
-  for the database format we keep compatible.</p>
-
-  <footer>MIT licensed. Not affiliated with Softvoile ClipDiary. Screenshot shows an early build; UI evolves.</footer>
+  <footer>MIT licensed. Not affiliated with Softvoile ClipDiary. Screenshot shows an early build; the UI still evolves.</footer>
 </div>
 </body>
 </html>
