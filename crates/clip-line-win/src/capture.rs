@@ -4,8 +4,7 @@ use clip_line_core::capture::{Block, Capture, ClipEvent, Format};
 use windows::Win32::Foundation::{HANDLE, HGLOBAL, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::DataExchange::{
     AddClipboardFormatListener, CloseClipboard, EnumClipboardFormats, GetClipboardData,
-    GetClipboardFormatNameW, GetClipboardSequenceNumber, OpenClipboard,
-    RemoveClipboardFormatListener,
+    GetClipboardFormatNameW, OpenClipboard, RemoveClipboardFormatListener,
 };
 use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
 use windows::Win32::System::Threading::{
@@ -24,15 +23,6 @@ const HGLOBAL_FORMATS: &[u32] = &[1, 7, 8, 13, 15, 16, 17];
 
 pub struct WinCapture {
     hwnd: isize,
-    /// Sequence number of the last clipboard write we made ourselves;
-    /// events at that number are self-originated and skipped.
-    suppress_seq: Option<u32>,
-}
-
-/// True when a clipboard event with sequence `ev_seq` must be ignored
-/// because it matches a self-originated write (`seen`).
-pub fn should_ignore(seen: Option<u32>, ev_seq: u32) -> bool {
-    seen == Some(ev_seq)
 }
 
 impl WinCapture {
@@ -66,15 +56,8 @@ impl WinCapture {
             }
             Ok(WinCapture {
                 hwnd: hwnd.0 as isize,
-                suppress_seq: None,
             })
         }
-    }
-
-    /// Tell the capture to ignore the event carrying sequence number `seq`
-    /// (the write `WinPaster` just made; see `WinPaster::paste`).
-    pub fn suppress_next(&mut self, seq: u32) {
-        self.suppress_seq = Some(seq);
     }
 }
 
@@ -104,10 +87,9 @@ impl Capture for WinCapture {
                 let _ = TranslateMessage(&msg);
                 DispatchMessageW(&msg);
                 if msg.message == WM_CLIPBOARDUPDATE {
-                    if should_ignore(self.suppress_seq, GetClipboardSequenceNumber()) {
-                        self.suppress_seq = None; // one-shot: next write is foreign again
-                        continue;
-                    }
+                    // Self-writes are filtered by the app's shared SuppressSlot
+                    // (payload identity), not a race-prone arm-after-write
+                    // sequence (cubic 6379).
                     // EmptyClipboard or foreign formats we can't read leave
                     // zero blocks — that state carries no clip; keep waiting.
                     let ev = read_clipboard()?;
@@ -127,8 +109,11 @@ unsafe fn read_clipboard() -> anyhow::Result<ClipEvent> {
         // Cross-process contention: another app may hold the clipboard for a
         // few ms. Bounded retry (SPEC capture: adapters own retries); only a
         // persistent failure falls back to the empty (skip) event.
+        // Cross-process contention: another app may hold the clipboard for
+        // a while. Consume-and-drop loses the ONLY notification, so keep
+        // retrying within a generous window before giving up (cubic 6583).
         let mut opened = false;
-        for _ in 0..10 {
+        for _ in 0..200 {
             if OpenClipboard(None).is_ok() {
                 opened = true;
                 break;
@@ -262,24 +247,5 @@ unsafe fn foreground_title() -> Option<String> {
             return None;
         }
         Some(String::from_utf16_lossy(&buf[..n as usize]))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::should_ignore;
-
-    #[test]
-    fn suppression_matches_only_the_recorded_sequence() {
-        assert!(should_ignore(Some(42), 42), "self-originated event ignored");
-        assert!(!should_ignore(Some(42), 43), "next foreign event passes");
-        assert!(
-            !should_ignore(None, 42),
-            "no suppression armed: everything passes"
-        );
-        assert!(
-            !should_ignore(Some(0), 1),
-            "seq 0 (no clipboard yet) never blocks later events"
-        );
     }
 }

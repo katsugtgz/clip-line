@@ -468,3 +468,26 @@ fn tag_delete_whole_tag_no_substring_collision() {
     assert_eq!(rows[0].tags, ",redish,");
     assert_eq!(rows[1].tags, ",blue,");
 }
+
+#[test]
+fn registered_names_survive_reload() {
+    // cubic 6124: the envelope carries only the numeric id; the store keeps
+    // an id->name registry so reload still knows it was image/png.
+    let (store, p) = temp_store("regnames");
+    let ev = ClipEvent {
+        blocks: vec![Block {
+            format: Format::Registered(0x8000_0001, "image/png".into()),
+            bytes: vec![1, 2],
+        }],
+        source_app: "t".into(),
+        source_title: String::new(),
+    };
+    let id = store.append(&ev).unwrap() as i64;
+    drop(store);
+    let s2 = Store::open(&p, StoreOpts::default()).unwrap();
+    let blocks = s2.load_data(id).unwrap();
+    match &blocks[0].format {
+        Format::Registered(_, name) => assert_eq!(name, "image/png"),
+        f => panic!("{f:?}"),
+    }
+}

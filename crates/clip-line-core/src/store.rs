@@ -103,6 +103,13 @@ CREATE TABLE IF NOT EXISTS log(
   tags TEXT not null default ',',
   url TEXT not null default '');
 CREATE TABLE IF NOT EXISTS options(key CHAR(30) PRIMARY KEY not null default '', value TEXT not null default '');
+-- Registered-format name registry: the envelope stores machine-local
+-- numeric ids only; the NAME is what adapters need to re-serve the
+-- format (image/png etc., cubic 6124). Written on append, hydrating
+-- load_data; unknown to the original app (its ids are its own machine's).
+CREATE TABLE IF NOT EXISTS reg_names(
+  id INTEGER PRIMARY KEY,
+  name TEXT not null default '');
 ";
 
 /// External-content FTS5 mirror of log(title,appname,url), kept in sync by triggers.
@@ -301,6 +308,16 @@ impl Store {
         let text = text_of(&ev.blocks);
         let (title, url, kind) = classify(&text, &ev.blocks);
         let conn = self.conn.lock().unwrap();
+        for b in &ev.blocks {
+            if let Format::Registered(id, name) = &b.format {
+                if !name.is_empty() {
+                    let _ = conn.execute(
+                        "INSERT OR REPLACE INTO reg_names(id,name) VALUES(?1,?2)",
+                        params![id, name],
+                    );
+                }
+            }
+        }
         conn.execute(
             "INSERT INTO log(title,type,data,datasize,appname,apptitle,starred,tags,url)
              VALUES(?1,?2,?3,?4,?5,?6,0,',',?7)",
@@ -381,8 +398,24 @@ impl Store {
             conn.query_row("SELECT data FROM log WHERE id=?1", params![id], |r| {
                 r.get(0)
             })?;
+        let names: std::collections::HashMap<u32, String> = conn
+            .prepare("SELECT id,name FROM reg_names")?
+            .query_map([], |r| {
+                Ok((r.get::<_, i64>(0)? as u32, r.get::<_, String>(1)?))
+            })?
+            .collect::<Result<_, _>>()?;
         drop(conn);
-        envelope::unpack(&blob)
+        let mut blocks = envelope::unpack(&blob)?;
+        for b in &mut blocks {
+            if let Format::Registered(id, name) = &mut b.format {
+                if name.is_empty() {
+                    if let Some(n) = names.get(id) {
+                        *name = n.clone();
+                    }
+                }
+            }
+        }
+        Ok(blocks)
     }
 
     pub fn set_star(&self, id: i64, on: bool) -> anyhow::Result<()> {

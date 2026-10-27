@@ -230,7 +230,10 @@ mod tests {
         // UTF-8 (stored block bytes are UTF-16LE).
         let b = Block {
             format: Format::UnicodeText,
-            bytes: "h\u{e9}".encode_utf16().flat_map(|u| u.to_le_bytes()).collect(),
+            bytes: "h\u{e9}"
+                .encode_utf16()
+                .flat_map(|u| u.to_le_bytes())
+                .collect(),
         };
         let (uti, bytes) = block_to_ns_type(&b).unwrap();
         assert_eq!(uti, "public.utf8-plain-text");

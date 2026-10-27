@@ -25,6 +25,9 @@ pub struct X11Capture {
     conn: RustConnection,
     win: Window,
     atoms: Atoms,
+    /// Events that arrived while a selection conversion was in flight
+    /// (XFixes notifications are otherwise dropped — cubic 5904).
+    deferred: std::collections::VecDeque<x11rb::protocol::Event>,
 }
 
 impl X11Capture {
@@ -57,7 +60,12 @@ impl X11Capture {
         conn.xfixes_select_selection_input(win, atoms.CLIPBOARD, mask)?
             .check()?;
         let _ = conn.flush();
-        Ok(X11Capture { conn, win, atoms })
+        Ok(X11Capture {
+            conn,
+            win,
+            atoms,
+            deferred: Default::default(),
+        })
     }
 }
 
@@ -70,7 +78,10 @@ impl Drop for X11Capture {
 impl clip_line_core::capture::Capture for X11Capture {
     fn next_event(&mut self) -> Result<clip_line_core::capture::ClipEvent> {
         loop {
-            let ev = self.conn.wait_for_event().context("X connection lost")?;
+            let ev = match self.deferred.pop_front() {
+                Some(e) => e,
+                None => self.conn.wait_for_event().context("X connection lost")?,
+            };
             let Event::XfixesSelectionNotify(se) = ev else {
                 continue;
             };
@@ -93,7 +104,7 @@ impl clip_line_core::capture::Capture for X11Capture {
 impl X11Capture {
     /// Convert-selection read of the current CLIPBOARD owner: TARGETS first,
     /// then one conversion per target. Empty when nothing decodable.
-    fn read_selection(&self) -> Result<clip_line_core::capture::ClipEvent> {
+    fn read_selection(&mut self) -> Result<clip_line_core::capture::ClipEvent> {
         // ponytail: source app/title need X input-focus lookup - phase 3 polish.
         let mut ev = clip_line_core::capture::ClipEvent {
             blocks: Vec::new(),
@@ -143,7 +154,7 @@ impl X11Capture {
     }
 
     /// One target conversion; None on refusal or INCR (huge payload).
-    fn convert(&self, target: Atom) -> Option<Vec<u8>> {
+    fn convert(&mut self, target: Atom) -> Option<Vec<u8>> {
         let prop = self.atoms.UTF8_STRING; // scratch property name
         self.conn
             .convert_selection(
@@ -162,10 +173,14 @@ impl X11Capture {
 
     /// ConvertSelection -> SelectionNotify -> GetProperty for one scratch prop.
     /// None when the owner refused (property NONE) or offered INCR.
-    fn wait_property(&self, prop: Atom) -> Option<GetPropertyReply> {
+    fn wait_property(&mut self, prop: Atom) -> Option<GetPropertyReply> {
         loop {
             let ev = self.conn.wait_for_event().ok()?;
             let Event::SelectionNotify(sn) = ev else {
+                // Clipboard changed mid-conversion (rapid copies): keep the
+                // notification for the next next_event() round instead of
+                // discarding it (cubic 5904).
+                self.deferred.push_back(ev);
                 continue;
             };
             if sn.requestor != self.win || sn.selection != self.atoms.CLIPBOARD {
@@ -254,13 +269,52 @@ pub(crate) fn payload_for(name: &str, bytes: Vec<u8>) -> Vec<u8> {
     }
 }
 
-/// Decode a text atom's bytes: STRING/COMPOUND_TEXT are Latin-1, rest UTF-8.
+/// Decode a text atom's bytes. STRING is Latin-1; COMPOUND_TEXT is an
+/// ISO-2022 escape-sequence encoding (NOT Latin-1); UTF8_STRING and the
+/// text/plain mimes are UTF-8. TEXT is owner-dependent: try UTF-8, fall
+/// back to Latin-1 when that cannot be (the practical X clipboard split).
 fn decode_text(name: &str, bytes: &[u8]) -> String {
-    if name == "STRING" || name == "COMPOUND_TEXT" {
-        bytes.iter().map(|&b| b as char).collect()
-    } else {
-        String::from_utf8_lossy(bytes).into_owned()
+    match name {
+        "STRING" => bytes.iter().map(|&b| b as char).collect(),
+        "COMPOUND_TEXT" => decode_compound_text(bytes),
+        "TEXT" => match std::str::from_utf8(bytes) {
+            Ok(s) => s.to_string(),
+            Err(_) => bytes.iter().map(|&b| b as char).collect(),
+        },
+        _ => String::from_utf8_lossy(bytes).into_owned(),
     }
+}
+
+/// COMPOUND_TEXT subset decoder (ICCCM): printable ASCII passes through,
+/// ISO-2022 escape sequences are consumed, and anything outside the active
+/// single-byte set becomes U+FFFD instead of being misread as Latin-1.
+/// ponytail: real charset switching and multi-byte sets (JIS etc.) need an
+/// ICU-quality decoder; ASCII + escape-skip covers practical payloads.
+fn decode_compound_text(bytes: &[u8]) -> String {
+    let mut out = String::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == 0x1b {
+            // ESC I... F: consume intermediates (0x20..=0x2F) then the
+            // final byte (0x30..=0x7E). Charset switching is not modeled.
+            i += 1;
+            while i < bytes.len() && (0x20..=0x2f).contains(&bytes[i]) {
+                i += 1;
+            }
+            if i < bytes.len() && (0x30..=0x7e).contains(&bytes[i]) {
+                i += 1;
+            }
+        } else {
+            if b < 0x80 {
+                out.push(b as char);
+            } else {
+                out.push('\u{FFFD}');
+            }
+            i += 1;
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -316,6 +370,20 @@ mod tests {
     #[test]
     fn string_atom_is_latin1() {
         assert_eq!(decode_text("STRING", &[0x68, 0xE9]), "h\u{e9}");
+    }
+
+    #[test]
+    fn compound_text_is_not_latin1() {
+        // cubic 5917: COMPOUND_TEXT escapes must not decode as Latin-1 chars.
+        let s = decode_text("COMPOUND_TEXT", &[0x41, 0x1b, b'(', b'B', 0x42, 0xC3]);
+        assert!(s.starts_with("AB"), "{s:?}");
+        assert!(s.ends_with('\u{FFFD}'), "high half is not Latin-1: {s:?}");
+    }
+
+    #[test]
+    fn text_atom_tries_utf8_then_latin1() {
+        assert_eq!(decode_text("TEXT", b"utf8 ok"), "utf8 ok");
+        assert_eq!(decode_text("TEXT", &[0xC3]), "\u{C3}"); // invalid UTF-8 -> Latin-1
     }
 
     #[test]
