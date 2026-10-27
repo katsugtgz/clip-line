@@ -660,13 +660,20 @@ fn paste_on_this_os(data: &ClipData, mode: PasteMode) -> anyhow::Result<()> {
     if std::env::var_os("WAYLAND_DISPLAY").is_some() {
         clip_line_wayland::WaylandPaster.paste(data, mode)
     } else {
-        // X11Paster owns the selection; cheap to build per paste.
-        use clip_line_core::paste::Paster;
-        clip_line_x11::X11Paster::new()?.paste(data, mode)
+        // One process-wide owner: a fresh X11Paster per paste leaked an X
+        // connection, hidden window and polling thread per call (cubic 6061).
+        static PASTER: std::sync::OnceLock<anyhow::Result<clip_line_x11::X11Paster>> =
+            std::sync::OnceLock::new();
+        PASTER
+            .get_or_init(clip_line_x11::X11Paster::new)
+            .as_ref()
+            .map_err(|e| anyhow::anyhow!("{e}"))?
+            .paste(data, mode)
     }
 }
 
 /// Shared drain loop: skip self-writes, persist foreign events, report fatal loss.
+
 fn capture_loop<C: clip_line_core::capture::Capture>(
     cap: &mut C,
     store: Arc<Store>,
