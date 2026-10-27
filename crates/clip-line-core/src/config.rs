@@ -16,6 +16,9 @@ pub struct Config {
 #[serde(default)]
 pub struct Storage {
     pub path: Option<std::path::PathBuf>,
+    /// Back up the main DB on app exit (SPEC phase 4). Default false.
+    #[serde(default)]
+    pub backup_on_exit: bool,
 }
 
 #[derive(Debug, Deserialize)]

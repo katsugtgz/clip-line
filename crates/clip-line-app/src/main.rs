@@ -13,7 +13,7 @@ use egui_extras::{Column, TableBuilder};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Self-paste suppression slot: the UI thread stores the payload it is about to
 /// write to the clipboard BEFORE writing; the capture thread skips the event
@@ -48,6 +48,7 @@ check_on_start = true    # Q11: GitHub Releases check on start; no telemetry
 
 # [storage]
 # path = "C:\path\to\clipline.db"
+# backup_on_exit = false   # snapshot next to the DB when the app exits
 "#;
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -219,6 +220,42 @@ pub fn date_range_strings(from: &str, to: &str) -> (Option<String>, Option<Strin
         ok.then(|| format!("{s}{suffix}"))
     };
     (one(from, " 00:00:00"), one(to, " 23:59:59"))
+}
+
+/// UNIX-epoch seconds → "YYYYMMDD-HHMMSS" (UTC). Hand-rolled civil-from-days
+/// (Hinnant) so backups add no date dependency. UTC, not local: backups are
+/// chronological files, the exact wall clock is cosmetic.
+pub fn backup_stamp(secs: u64) -> String {
+    let days = (secs / 86_400) as i64;
+    let (y, m, d) = civil_from_days(days);
+    let s = secs % 86_400;
+    format!(
+        "{y:04}{m:02}{d:02}-{:02}{:02}{:02}",
+        s / 3600,
+        s % 3600 / 60,
+        s % 60
+    )
+}
+
+/// days since 1970-01-01 → (year, month, day), proleptic Gregorian.
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    (if m <= 2 { y + 1 } else { y }, m as u32, d as u32)
+}
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 fn config_dir() -> Option<PathBuf> {
@@ -416,7 +453,7 @@ fn main() -> anyhow::Result<()> {
         "clipLine",
         opts,
         Box::new(move |_cc| {
-            let mut app = App::new(store, &cfg, suppress);
+            let mut app = App::new(store, &cfg, suppress, db);
             if extras.update.check_on_start {
                 let tx = app.update_tx();
                 app.spawn_update_check(tx);
@@ -668,10 +705,13 @@ struct App {
     update: Option<String>, // footer line (Q11), e.g. "update: 0.2.0 available"
     update_tx: std::sync::mpsc::Sender<String>,
     update_rx: std::sync::mpsc::Receiver<String>,
+    // SPEC phase 4 backup: db location for backup file names + exit flag.
+    db_path: PathBuf,
+    backup_on_exit: bool,
 }
 
 impl App {
-    fn new(store: Arc<Store>, cfg: &Config, suppress: SuppressSlot) -> Self {
+    fn new(store: Arc<Store>, cfg: &Config, suppress: SuppressSlot, db_path: PathBuf) -> Self {
         let (update_tx, update_rx) = std::sync::mpsc::channel::<String>();
         App {
             mode: parse_mode(&cfg.paste.default_mode),
@@ -709,6 +749,8 @@ impl App {
             update: None,
             update_tx,
             update_rx,
+            db_path: db_path.clone(),
+            backup_on_exit: cfg.storage.backup_on_exit,
         }
     }
 
@@ -726,6 +768,17 @@ impl App {
                 let _ = tx.send(msg);
             })
             .ok();
+    }
+
+    /// SPEC phase 4: snapshot to <db dir>/backup-YYYYMMDD-HHMMSS.db.
+    fn run_backup(&mut self) {
+        let dst = self
+            .db_path
+            .with_file_name(format!("backup-{}.db", backup_stamp(now_secs())));
+        match self.store.backup_to(&dst) {
+            Ok(()) => self.status = dst.display().to_string(),
+            Err(e) => self.status = format!("backup failed: {e}"),
+        }
     }
 
     fn poll_update(&mut self) {
@@ -797,9 +850,10 @@ impl App {
             true,
             None,
         );
+        let backup = MenuItem::with_id("clipline-backup", "Backup", true, None);
         let quit = MenuItem::with_id("clipline-quit", "Quit", true, None);
         let menu = Menu::new();
-        let _ = menu.append_items(&[&show, &mode_item, &quit]);
+        let _ = menu.append_items(&[&show, &mode_item, &backup, &quit]);
 
         match tray_icon::TrayIconBuilder::new()
             .with_menu(Box::new(menu))
@@ -854,6 +908,7 @@ impl App {
                             tray.set_menu(Some(Box::new(Self::tray_menu(self.mode))));
                         }
                     }
+                    "clipline-backup" => self.run_backup(),
                     "clipline-quit" => ctx.send_viewport_cmd(ViewportCommand::Close),
                     _ => {}
                 }
@@ -878,9 +933,10 @@ impl App {
             true,
             None,
         );
+        let backup = MenuItem::with_id("clipline-backup", "Backup", true, None);
         let quit = MenuItem::with_id("clipline-quit", "Quit", true, None);
         let menu = Menu::new();
-        let _ = menu.append_items(&[&show, &mode_item, &quit]);
+        let _ = menu.append_items(&[&show, &mode_item, &backup, &quit]);
         menu
     }
 
@@ -1310,6 +1366,19 @@ impl eframe::App for App {
         ctx.request_repaint_after(Duration::from_secs(1));
     }
 
+    /// SPEC phase 4 backup_on_exit: eframe non-glow trait (0.37) — runs once on
+    /// shutdown, after save; errors to stderr only (window is already gone).
+    fn on_exit(&mut self) {
+        if self.backup_on_exit {
+            let dst = self
+                .db_path
+                .with_file_name(format!("backup-exit-{}.db", backup_stamp(now_secs())));
+            if let Err(e) = self.store.backup_to(&dst) {
+                eprintln!("backup_on_exit: {e}");
+            }
+        }
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.search_focus = false;
         egui::Panel::top("tabs").show(ui, |ui| {
@@ -1377,6 +1446,11 @@ impl eframe::App for App {
                 ui.label(format!("{} clips", self.rows.len()));
                 ui.separator();
                 ui.label(mode_str(self.mode));
+                ui.separator();
+                // SPEC phase 4: manual backup, same dir as the DB, status reports path.
+                if ui.button(t("Backup")).clicked() {
+                    self.run_backup();
+                }
                 ui.separator();
                 ui.label(self.status.as_str());
                 // Q11: update status lives in the footer — never a modal, no telemetry.

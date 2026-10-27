@@ -381,6 +381,29 @@ fn fts_legacy_db_backfilled_on_open() {
 }
 
 #[test]
+fn backup_to_copies_rows() {
+    let (store, p) = temp_store("backup");
+    store
+        .attach_snippets(&p.with_file_name("snippets.sdb"))
+        .unwrap();
+    for t in ["one", "two", "three"] {
+        store.append(&text_event(t)).unwrap();
+    }
+    store.snippet_add(0, "greet", "hi").unwrap();
+    let n = count(&store);
+    let dst = p.with_file_name("backup.db");
+    store.backup_to(&dst).unwrap();
+
+    let reopened = Store::open(&dst, StoreOpts::default()).unwrap();
+    assert_eq!(count(&reopened), n, "backup has same row count");
+
+    let sdb = dst.with_file_name("backup.snippets.sdb");
+    assert!(sdb.exists(), "snippets file copied");
+    reopened.attach_snippets(&sdb).unwrap();
+    assert_eq!(reopened.snippet_list(0).unwrap().len(), 1, "snippet intact");
+}
+
+#[test]
 fn fts_odd_query_no_panic() {
     let (store, _p) = temp_store("fts-odd");
     store.append(&text_event("some clip")).unwrap();
