@@ -106,8 +106,9 @@ CREATE TABLE IF NOT EXISTS options(key CHAR(30) PRIMARY KEY not null default '',
 ";
 
 /// External-content FTS5 mirror of log(title,appname,url), kept in sync by triggers.
-/// ponytail: MATCH-only via match_clause; if rank/snippet/prefix queries are ever
-/// needed, extend match_clause — callers stay on Filter.query.
+/// Mirror only: search currently uses the LIKE parity path (SPEC "FTS5
+/// later"); MATCH never answers a substring query, so enabling it again
+/// requires a post-filter or prefix-index plan first.
 const FTS_SCHEMA: &str = "
 CREATE VIRTUAL TABLE IF NOT EXISTS log_fts USING fts5(title, appname, url, content='log', content_rowid='id');
 CREATE TRIGGER IF NOT EXISTS log_fts_ai AFTER INSERT ON log BEGIN
