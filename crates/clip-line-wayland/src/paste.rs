@@ -10,15 +10,31 @@ use wl_clipboard_rs::copy::{self, MimeSource, MimeType as CopyMime, ServeRequest
 /// Wayland's security model, so each needs manual setup once.
 pub const INJECT_TOOLS: &[&str] = &["ydotool", "wtype"];
 
-/// External command present on PATH? Pure — unit-testable without Linux.
+/// External command present AND executable on PATH? Pure — unit-testable
+/// without Linux. A non-executable file would only fail at spawn time with
+/// "Permission denied", after the other helper was skipped.
 pub fn tool_available(tool: &str) -> bool {
     let Ok(path) = std::env::var("PATH") else {
         return false;
     };
     path.split(':').any(|dir| {
         let p = std::path::Path::new(dir).join(tool);
-        p.is_file()
+        is_executable_file(&p)
     })
+}
+
+#[cfg(unix)]
+fn is_executable_file(p: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    p.is_file()
+        && p.metadata()
+            .map(|m| m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable_file(_p: &std::path::Path) -> bool {
+    false // Windows builds never inject through ydotool/wtype
 }
 
 /// First available injection tool; None → setup-hint error text.
@@ -100,7 +116,7 @@ fn block_source(b: &Block) -> Option<MimeSource> {
             (b.bytes.clone(), CopyMime::Specific("image/png".into()))
         }
         Format::FileDrop => (
-            utf16_to_utf8(&b.bytes),
+            file_drop_to_uri_list(&b.bytes),
             CopyMime::Specific("text/uri-list".into()),
         ),
         // ponytail: DIB/DIBV5 have no Wayland mime; convert via image crate when image clips matter here
@@ -120,6 +136,28 @@ pub fn utf16_to_utf8(bytes: &[u8]) -> Vec<u8> {
         .take_while(|&u| u != 0)
         .collect();
     String::from_utf16_lossy(&units).into_bytes()
+}
+
+/// Stored FileDrop form (UTF-16LE, NUL-separated) -> full UTF-8
+/// text/uri-list: every entry, newline-separated, CRLF line ends per RFC 2483.
+pub fn file_drop_to_uri_list(bytes: &[u8]) -> Vec<u8> {
+    let urls: Vec<String> = bytes
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .collect::<Vec<u16>>()
+        .split(|&u| u == 0)
+        .filter(|s| !s.is_empty())
+        .map(|s| String::from_utf16_lossy(s))
+        .collect();
+    let mut out = String::new();
+    for u in urls {
+        out.push_str(&u);
+        out.push_str(
+            "
+",
+        );
+    }
+    out.into_bytes()
 }
 
 fn text_of(blocks: &[Block]) -> anyhow::Result<String> {

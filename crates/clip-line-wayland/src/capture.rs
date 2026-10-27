@@ -48,8 +48,7 @@ pub fn unsupported_message(err: &WlError) -> Option<String> {
         "this compositor ships neither wlr-data-control nor ext-data-control"
     };
     Some(format!(
-        "Wayland capture unavailable: missing protocol {name} on desktop \
-         {desktop} — {why}. Use a wlroots/KDE session or GNOME 48+, or run \
+        "Wayland capture unavailable: missing protocol {name} on desktop {desktop} (XDG_CURRENT_DESKTOP={desktop}) — {why}. Use a wlroots/KDE session or GNOME 48+, or run \
          under XWayland/X11."
     ))
 }
@@ -115,10 +114,19 @@ fn read_offer(mimes: &[String], offer: &mut Offer<'_>) -> anyhow::Result<Option<
         "text/uri-list" => Format::FileDrop,
         _ => Format::UnicodeText,
     };
-    if format == Format::UnicodeText && !bytes.ends_with(b"\0\0") {
-        // Wayland text offers are UTF-8 without a terminator; storage keeps
-        // the Windows shape (UTF-16LE + wide NUL) so the envelope matches.
-        bytes = to_win_text(&String::from_utf8_lossy(trim_cr(&bytes)));
+    match format {
+        Format::UnicodeText => {
+            // Wayland text offers are UTF-8 without a terminator; storage keeps
+            // the Windows shape (UTF-16LE + wide NUL) so the envelope matches.
+            // Trailing CRLF is payload, not framing — it is not trimmed.
+            bytes = to_win_text(&String::from_utf8_lossy(&bytes));
+        }
+        Format::FileDrop => {
+            // Storage form: UTF-16LE, NUL-separated, one trailing wide NUL
+            // (same as the macOS adapter); the paster re-emits a URI list.
+            bytes = uri_list_to_storage(&String::from_utf8_lossy(&bytes));
+        }
+        _ => {}
     }
     Ok(Some(ClipEvent {
         blocks: vec![Block { format, bytes }],
@@ -136,13 +144,19 @@ pub fn to_win_text(s: &str) -> Vec<u8> {
     out
 }
 
-/// Trailing CR/LF off text/uri-list style payloads (CRLF-safe).
-pub fn trim_cr(bytes: &[u8]) -> &[u8] {
-    let mut end = bytes.len();
-    while end > 0 && (bytes[end - 1] == b'\n' || bytes[end - 1] == b'\r') {
-        end -= 1;
-    }
-    &bytes[..end]
+/// text/uri-list (CRLF lines, `#` comments) -> storage form: UTF-16LE,
+/// NUL-separated, one trailing wide NUL. Empty lines and comments dropped.
+pub fn uri_list_to_storage(list: &str) -> Vec<u8> {
+    let urls: Vec<String> = list
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(str::to_string)
+        .collect();
+    let joined = urls.join("\0");
+    let mut units: Vec<u16> = joined.encode_utf16().collect();
+    units.push(0);
+    units.iter().flat_map(|u| u.to_le_bytes()).collect()
 }
 
 #[cfg(test)]
@@ -193,9 +207,21 @@ mod tests {
     }
 
     #[test]
-    fn trims_trailing_newlines() {
-        assert_eq!(trim_cr(b"a\r\n"), b"a");
-        assert_eq!(trim_cr(b"a"), b"a");
-        assert_eq!(trim_cr(b""), b"");
+    fn uri_list_to_storage_round_trip() {
+        let storage = uri_list_to_storage("file:///a\r\nfile:///b\r\n# comment\r\n");
+        // two entries NUL-separated + trailing wide NUL
+        let want: Vec<u8> = "file:///a\0file:///b\0"
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes())
+            .collect();
+        assert_eq!(storage, want);
+    }
+
+    #[test]
+    fn text_payload_keeps_trailing_newline() {
+        // cubic 6187: trailing CRLF is payload; only the wide NUL terminator
+        // is added.
+        let b = to_win_text("line\r\n");
+        assert_eq!(b.len(), 8, "CRLF kept + wide NUL");
     }
 }
