@@ -162,14 +162,12 @@ unsafe fn write_blocks(pb: &NSPasteboard, blocks: &[Block]) -> anyhow::Result<()
 
 /// One file item: the URL string under public.file-url.
 unsafe fn file_item(url: &str) -> objc2::rc::Retained<NSPasteboardItem> {
-    unsafe {
-        let item = NSPasteboardItem::new();
-        item.setString_forType(
-            &NSString::from_str(url),
-            &NSString::from_str("public.file-url"),
-        );
-        item
-    }
+    let item = NSPasteboardItem::new();
+    item.setString_forType(
+        &NSString::from_str(url),
+        &NSString::from_str("public.file-url"),
+    );
+    item
 }
 
 fn inject_cmd_v() -> anyhow::Result<()> {
@@ -221,7 +219,8 @@ mod tests {
     #[test]
     fn file_drop_block_round_trips_url_list() {
         let urls = ["file:///a.txt", "file:///b.txt"];
-        let bytes = crate::capture::file_urls_to_bytes(&urls.map(String::from).into());
+        let list: Vec<String> = urls.iter().map(|s| s.to_string()).collect();
+        let bytes = crate::capture::file_urls_to_bytes(&list);
         let b = Block {
             format: Format::FileDrop,
             bytes: bytes.clone(),

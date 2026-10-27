@@ -196,8 +196,7 @@ impl OwnerState {
                     prop,
                     ty,
                     data.iter()
-                        .map(|w| w.to_le_bytes())
-                        .flatten()
+                        .flat_map(|w| w.to_le_bytes().into_iter())
                         .collect::<Vec<u8>>()
                         .as_slice(),
                 )

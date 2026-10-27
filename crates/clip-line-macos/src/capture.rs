@@ -25,12 +25,10 @@ pub fn should_ignore(seen: Option<isize>, ev: isize) -> bool {
 
 impl MacCapture {
     pub fn new() -> Self {
-        unsafe {
-            let count = NSPasteboard::generalPasteboard().changeCount();
-            Self {
-                last_count: count,
-                suppress_count: None,
-            }
+        let count = NSPasteboard::generalPasteboard().changeCount();
+        Self {
+            last_count: count,
+            suppress_count: None,
         }
     }
 
@@ -146,7 +144,7 @@ unsafe fn read_pasteboard(pb: &NSPasteboard) -> anyhow::Result<ClipEvent> {
                     }
                 }
                 Some(uti) => {
-                    if let Some(d) = pb.dataForType(&*t) {
+                    if let Some(d) = pb.dataForType(&t) {
                         let bytes = d.to_vec();
                         // Text: store as UTF-16LE like every other adapter;
                         // dataForType(String) yields UTF-8 bytes on macOS.
@@ -160,7 +158,7 @@ unsafe fn read_pasteboard(pb: &NSPasteboard) -> anyhow::Result<ClipEvent> {
                 }
                 None => {
                     // Non-core type: keep as registered block when data exists.
-                    if let Some(d) = pb.dataForType(&*t) {
+                    if let Some(d) = pb.dataForType(&t) {
                         blocks.push(map_block(&t_str, d.to_vec()));
                     }
                 }
@@ -204,7 +202,7 @@ pub fn file_urls_to_bytes(urls: &[String]) -> Vec<u8> {
 /// window title accessor; title stays "" until a CGWindow-list lookup lands.
 /// Unknown steps degrade to "" — never block capture on lookup failure.
 unsafe fn frontmost_app() -> (String, String) {
-    unsafe {
+    {
         let ws = NSWorkspace::sharedWorkspace();
         let app = ws
             .frontmostApplication()
