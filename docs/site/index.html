@@ -4,207 +4,209 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<meta name="theme-color" content="#fbfaf8" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#15171c" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f4f4f1" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#14171c" media="(prefers-color-scheme: dark)">
 <title>clipLine — open-source clipboard history</title>
 <meta name="description" content="Fast, open-source clipboard history manager for Windows, Linux and macOS. Rust + SQLite.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Spline+Sans+Mono:ital,wght@0,300..700;1,300..700&display=swap" rel="stylesheet">
 <style>
   :root {
     color-scheme: light dark;
-    --bg: #fbfaf8;
+    --paper: #f4f4f1;
     --panel: #ffffff;
-    --fg: #23262b;
-    --dim: #5b5f66;
-    --line: #e3e1dc;
-    --accent: #a03e12;
+    --ink: #1a1e24;
+    --dim: #585f68;
+    --rule: #d9dad3;
+    --accent: #2340c8;
     --accent-ink: #ffffff;
-    --tint: rgba(160, 62, 18, .09);
-    --mono: ui-monospace, "Cascadia Code", "JetBrains Mono", Consolas, monospace;
-    --serif: "Iowan Old Style", "Palatino Linotype", Charter, Georgia, serif;
+    --accent-soft: color-mix(in oklab, #2340c8 9%, transparent);
+    --mono: "Spline Sans Mono", ui-monospace, "Cascadia Code", "JetBrains Mono", Consolas, monospace;
     --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #15171c;
-      --panel: #1d2026;
-      --fg: #e8e6e1;
-      --dim: #a0a5ad;
-      --line: #2c3038;
-      --accent: #e08a63;
-      --accent-ink: #241310;
-      --tint: rgba(224, 138, 99, .14);
+      --paper: #14171c;
+      --panel: #1b2027;
+      --ink: #e8eaec;
+      --dim: #9aa3ad;
+      --rule: #2b313a;
+      --accent: #96aaff;
+      --accent-ink: #101a3f;
+      --accent-soft: color-mix(in oklab, #96aaff 16%, transparent);
     }
   }
 
-  * { box-sizing: border-box; }
+  *, *::before, *::after { box-sizing: border-box; }
   html { accent-color: var(--accent); }
-  body {
-    font: 1rem/1.65 var(--sans);
-    margin: 0;
-    background: var(--bg);
-    color: var(--fg);
-  }
-  ::selection { background: var(--tint); }
-  a { color: var(--accent); }
-  a:focus-visible, .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  body { margin: 0; font: 1rem/1.65 var(--sans); background: var(--paper); color: var(--ink); }
+  ::selection { background: color-mix(in oklab, var(--accent) 26%, transparent); }
+  a { color: var(--accent); text-underline-offset: .18em; }
+  a:focus-visible, .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
 
-  .wrap { max-width: 46rem; margin-inline: auto; padding: 2.5rem 1.25rem 4rem; }
+  .shell { max-inline-size: 60rem; margin-inline: auto; padding-inline: clamp(1rem, 4vw, 1.5rem); }
+  .bleed { max-inline-size: 78rem; margin-inline: auto; padding-inline: clamp(.5rem, 2.5vw, 1.5rem); }
 
   /* header */
-  .top { display: flex; align-items: center; gap: .65rem; flex-wrap: wrap; }
-  .top .logo { inline-size: 1.75rem; block-size: 1.75rem; }
-  .top .name { font-size: 1.1rem; font-weight: 650; letter-spacing: -.01em; }
+  .top { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; padding-block: 1.6rem; }
+  .brand { display: inline-flex; align-items: center; gap: .55rem; text-decoration: none; color: var(--ink);
+           font: 600 1.02rem var(--mono); letter-spacing: -.02em; }
+  .brand svg { inline-size: 1.7rem; block-size: 1.7rem; }
   .top nav { margin-inline-start: auto; display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; }
-  .btn {
-    text-decoration: none; font-weight: 600; padding: .55rem 1.05rem;
-    border-radius: 8px; border: 1px solid transparent;
-  }
+  .btn { display: inline-flex; align-items: center; font: 600 .93rem var(--mono); text-decoration: none;
+         padding: .55rem 1rem; border-radius: 7px; border: 1px solid transparent; }
   .btn.primary { background: var(--accent); color: var(--accent-ink); }
-  .btn.primary:hover { filter: brightness(1.08); }
-  .btn.ghost { border-color: var(--line); color: var(--fg); }
+  .btn.primary:hover { background: color-mix(in oklab, var(--accent) 86%, white); }
+  .btn.ghost { border-color: var(--rule); color: var(--ink); }
   .btn.ghost:hover { border-color: var(--dim); }
-  .top nav a.plain { color: var(--fg); text-decoration: none; font-weight: 550; }
-  .top nav a.plain:hover { color: var(--accent); }
+  .top nav a.plain { color: var(--ink); text-decoration: none; font: 500 .93rem var(--mono); }
+  .top nav a.plain:hover { color: var(--accent); text-decoration: underline; }
 
   /* hero */
   h1 {
-    font: 700 clamp(2.1rem, 1.2rem + 4.5vw, 3.3rem)/1.12 var(--serif);
-    letter-spacing: -.015em;
-    margin: 3rem 0 0;
+    margin: clamp(2.5rem, 6vw, 4rem) 0 0;
+    font: 600 clamp(2rem, 1.1rem + 4vw, 3.3rem)/1.14 var(--mono);
+    letter-spacing: -.035em;
+    max-inline-size: 24ch;
     text-wrap: balance;
   }
-  .lede {
-    font-size: 1.1rem; max-width: 38rem;
-    margin: 1rem 0 0; color: var(--dim);
-    text-wrap: pretty;
-  }
+  .caret { display: inline-block; inline-size: .48ch; block-size: .82em; background: var(--accent);
+           margin-inline-start: .1em; translate: 0 .06em; animation: blink 1.15s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .lede { font-size: 1.08rem; line-height: 1.6; color: var(--dim); max-inline-size: 36rem;
+          margin: 1.1rem 0 0; text-wrap: pretty; }
+  .cta-row { display: flex; gap: .7rem; flex-wrap: wrap; margin: 1.6rem 0 0; }
 
-  /* the history panel — hero centerpiece */
+  /* the history tape — the one bold element, breaks out of the text column */
   .panel {
-    margin: 2.25rem 0 0;
+    margin-block-start: clamp(2rem, 5vw, 3rem);
+    container: tape / inline-size;
     background: var(--panel);
-    border: 1px solid var(--line);
-    border-radius: 10px;
+    border: 1px solid var(--rule);
+    border-block-start: 3px solid var(--accent);
+    border-radius: 12px;
     overflow: clip;
-    font-size: .95rem;
+    font-family: var(--mono);
+    font-size: .92rem;
+    box-shadow: 0 1px 2px rgb(0 0 0 / .04), 0 14px 34px -18px rgb(0 0 0 / .2);
   }
-  .panel-head {
-    display: flex; justify-content: space-between; align-items: baseline; gap: 1rem;
-    padding: .65rem 1rem; border-block-end: 1px solid var(--line);
-    font-weight: 600;
-  }
-  .panel-head .count { font: .8rem var(--mono); color: var(--dim); font-variant-numeric: tabular-nums; }
+  .panel-head { display: flex; align-items: center; gap: 1rem; padding: .6rem 1rem;
+                border-block-end: 1px solid var(--rule); }
+  .panel-title { font-weight: 600; font-size: .95rem; }
+  .search-mock { display: flex; align-items: center; gap: .5rem; margin-inline-start: auto;
+                 color: var(--dim); font-size: .8rem; border: 1px solid var(--rule);
+                 border-radius: 6px; padding: .28rem .6rem; min-inline-size: 12rem; }
+  .count { font-size: .78rem; color: var(--dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
   .row {
     display: grid;
-    grid-template-columns: 5.2rem minmax(4.5rem, max-content) 1fr;
-    gap: .35rem .9rem; align-items: baseline;
-    padding: .55rem 1rem;
-    border-block-end: 1px solid var(--line);
-    animation: land .45s ease both;
-    animation-delay: calc(var(--i) * 140ms + 250ms);
+    grid-template-columns: 5.6rem minmax(4.4rem, max-content) minmax(0, 1fr);
+    gap: .3rem 1rem; align-items: baseline;
+    padding: .5rem 1rem;
+    border-block-end: 1px solid var(--rule);
+    animation: land .5s ease both;
+    animation-delay: calc(var(--i) * 130ms + .25s);
   }
   .row:last-of-type { border-block-end: 0; }
-  .row .time { font: .8rem var(--mono); color: var(--dim); font-variant-numeric: tabular-nums; }
-  .row .app {
-    font: .72rem var(--mono); color: var(--fg);
-    border: 1px solid var(--line); border-radius: 5px;
-    padding: .05rem .4rem; justify-self: start; white-space: nowrap;
-  }
-  .row .clip {
-    min-inline-size: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    overflow-wrap: anywhere;
-  }
-  .row .clip code { all: unset; font-family: var(--mono); font-size: .88em; }
-  .row.sel {
-    background: var(--tint);
-    box-shadow: inset 3px 0 0 var(--accent);
-  }
-  .row.sel .clip::after { content: "⏎"; font-family: var(--mono); color: var(--accent); margin-inline-start: .5ch; }
-  .keys {
-    display: flex; gap: 1.1rem; flex-wrap: wrap;
-    padding: .6rem 1rem; border-block-start: 1px solid var(--line);
-    font-size: .8rem; color: var(--dim);
-  }
-  .keys span { display: inline-flex; align-items: center; gap: .4rem; }
-  kbd {
-    font: .72rem var(--mono); color: var(--fg);
-    border: 1px solid var(--line); border-block-end-width: 2px;
-    border-radius: 4px; padding: 0 .35rem;
-  }
-  @keyframes land { from { opacity: 0; transform: translateY(-.4rem); } }
+  .row .time { font-size: .78rem; color: var(--dim); font-variant-numeric: tabular-nums; }
+  .row .app { font-size: .7rem; color: var(--ink); border: 1px solid var(--rule); border-radius: 99px;
+              padding: .02rem .5rem; justify-self: start; white-space: nowrap; }
+  .row .clip { min-inline-size: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+               overflow-wrap: anywhere; font-size: .88rem; }
+  .row.sel { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
+  .row.sel .clip::after { content: "⏎"; color: var(--accent); margin-inline-start: .5ch; }
+  @keyframes land { from { opacity: 0; translate: 0 -.4rem; } }
+  .keys { display: flex; gap: 1.25rem; flex-wrap: wrap; padding: .6rem 1rem;
+          border-block-start: 1px solid var(--rule); font-size: .78rem; color: var(--dim); }
+  .keys span { display: inline-flex; align-items: center; gap: .45rem; }
+  kbd { font: 700 .72rem var(--mono); color: var(--ink);
+        border: 1px solid var(--rule); border-block-end-width: 2px;
+        border-radius: 4px; padding: 0 .35rem;
+        background: color-mix(in oklab, var(--ink) 5%, transparent); }
 
-  img.shot {
-    inline-size: 100%; display: block;
-    border: 1px solid var(--line); border-radius: 10px;
-    margin: 2.5rem 0 0;
-  }
-
-  /* sections */
-  h2 { font: 650 1.3rem/1.3 var(--sans); letter-spacing: -.01em; margin: 3.25rem 0 .75rem; }
-  section p { max-width: 42rem; text-wrap: pretty; }
-
-  dl.features { margin: 1.5rem 0 0; }
-  dl.features > div {
-    display: grid;
-    grid-template-columns: minmax(10rem, max-content) 1fr;
-    gap: .25rem 2rem;
-    padding-block: .9rem;
-    border-block-start: 1px solid var(--line);
-  }
-  dl.features > div:last-child { border-block-end: 1px solid var(--line); }
-  dl.features dt { font-weight: 650; }
-  dl.features dd { margin: 0; color: var(--dim); max-width: 34rem; }
-  @media (max-width: 34rem) {
-    dl.features > div { grid-template-columns: 1fr; gap: .15rem; }
-    .row { grid-template-columns: 1fr; gap: .2rem .6rem; }
+  @container tape (inline-size < 34rem) {
+    .panel-head { flex-wrap: wrap; }
+    .search-mock { order: 3; flex: 1 1 100%; min-inline-size: 0; }
+    .row { grid-template-columns: 1fr; gap: .15rem .6rem; }
     .row .time { order: 3; }
   }
 
-  pre {
-    font: .875rem/1.6 var(--mono);
-    background: var(--panel); border: 1px solid var(--line);
-    border-radius: 10px; padding: 1rem 1.1rem; overflow: auto;
-    scrollbar-gutter: stable;
-  }
+  img.shot { inline-size: 100%; display: block; border: 1px solid var(--rule); border-radius: 12px;
+             margin-block-start: 3.5rem; }
 
-  footer { margin-block-start: 4rem; padding-block-start: 1.25rem; border-block-start: 1px solid var(--line); font-size: .875rem; color: var(--dim); }
+  /* sections */
+  h2 { display: flex; align-items: center; gap: 1.1rem; font: 600 1.06rem var(--mono);
+       letter-spacing: -.01em; margin: 3.75rem 0 1rem; }
+  h2::after { content: ""; flex: 1; border-block-start: 1px solid var(--rule); }
+  section p { max-inline-size: 42rem; text-wrap: pretty; }
+  code { font-family: var(--mono); font-size: .9em; }
+
+  dl.features { margin: 1.25rem 0 0; }
+  dl.features > div { display: grid; grid-template-columns: minmax(10rem, max-content) 1fr;
+                      gap: .25rem 2rem; padding-block: .9rem;
+                      border-block-start: 1px solid var(--rule); }
+  dl.features > div:last-child { border-block-end: 1px solid var(--rule); }
+  dl.features dt { font: 600 .95rem var(--mono); letter-spacing: -.01em; }
+  dl.features dd { margin: 0; color: var(--dim); max-inline-size: 34rem; }
+  @media (max-width: 34rem) { dl.features > div { grid-template-columns: 1fr; gap: .15rem; } }
+
+  pre { font: .875rem/1.6 var(--mono); background: var(--panel); border: 1px solid var(--rule);
+        border-radius: 10px; padding: 1rem 1.1rem; overflow: auto; scrollbar-gutter: stable; }
+
+  footer { margin-block-start: 4rem; padding-block: 1.2rem; border-block-start: 1px solid var(--rule);
+           font-size: .85rem; color: var(--dim); display: flex; justify-content: space-between;
+           gap: .5rem 2rem; flex-wrap: wrap; }
+
+  /* below-fold sections skip rendering until near viewport */
+  .cv { content-visibility: auto; contain-intrinsic-size: auto 520px; }
 
   @media (prefers-reduced-motion: reduce) {
-    .row { animation: none; }
-    .btn, .top nav a.plain { transition: none; }
+    .caret, .row { animation: none; }
   }
 </style>
 </head>
 <body>
-<div class="wrap">
-  <header class="top">
-    <svg class="logo" viewBox="0 0 64 64" aria-label="clipLine logo">
+<header class="shell top">
+  <a class="brand" href="./" aria-label="clipLine home">
+    <svg viewBox="0 0 64 64" aria-hidden="true">
       <rect x="18" y="6" width="28" height="10" rx="3" fill="var(--accent)"/>
       <rect x="8" y="12" width="48" height="46" rx="6" fill="none" stroke="var(--accent)" stroke-width="5"/>
       <path d="M20 30h24M20 40h24M20 50h14" stroke="currentColor" stroke-width="4" stroke-linecap="round"/>
     </svg>
-    <span class="name">clipLine</span>
-    <nav>
-      <a class="plain" href="https://github.com/katsugtgz/clip-line">Source</a>
-      <a class="btn primary" href="https://github.com/katsugtgz/clip-line/releases">Download</a>
-    </nav>
-  </header>
+    <span>clipLine</span>
+  </a>
+  <nav>
+    <a class="plain" href="https://github.com/katsugtgz/clip-line">Source</a>
+    <a class="btn primary" href="https://github.com/katsugtgz/clip-line/releases">Download</a>
+  </nav>
+</header>
 
-  <main>
-    <h1>Everything you copy, remembered.</h1>
+<main>
+  <div class="shell">
+    <h1>Everything you copy, remembered.<span class="caret" aria-hidden="true"></span></h1>
     <p class="lede">clipLine is a fast, open-source clipboard history for Windows, Linux and macOS.
     Every snippet — text, links, images, files — lands in one searchable list, kept in a
     single SQLite file on your machine.</p>
+    <p class="cta-row">
+      <a class="btn primary" href="https://github.com/katsugtgz/clip-line/releases">Download</a>
+      <a class="btn ghost" href="#install">Install from source</a>
+    </p>
+  </div>
 
+  <div class="bleed">
     <div class="panel" role="img" aria-label="clipLine history panel: timestamped clips from the apps they came from, one selected with the keyboard, Enter pastes it">
-      <div class="panel-head">History <span class="count">128 items</span></div>
+      <div class="panel-head">
+        <span class="panel-title">History</span>
+        <span class="search-mock"><kbd>/</kbd><span>search history</span></span>
+        <span class="count">128 items</span>
+      </div>
       <div class="row" style="--i:0">
         <span class="time">14:32:07</span><span class="app">firefox</span>
-        <span class="clip"><code>en.wikipedia.org/wiki/Clipboard_(computing)</code></span>
+        <span class="clip">en.wikipedia.org/wiki/Clipboard_(computing)</span>
       </div>
       <div class="row" style="--i:1">
         <span class="time">14:29:51</span><span class="app">VS Code</span>
-        <span class="clip"><code>fn watch_clipboard(pool: &amp;DbPool) -&gt; Result&lt;()&gt;</code></span>
+        <span class="clip">fn watch_clipboard(pool: &amp;DbPool) -&gt; Result&lt;()&gt;</span>
       </div>
       <div class="row" style="--i:2">
         <span class="time">14:27:03</span><span class="app">Word</span>
@@ -216,7 +218,7 @@
       </div>
       <div class="row" style="--i:4">
         <span class="time">14:19:12</span><span class="app">terminal</span>
-        <span class="clip"><code>cargo install --path crates/clip-line-app</code></span>
+        <span class="clip">cargo install --path crates/clip-line-app</span>
       </div>
       <div class="keys">
         <span><kbd>↑</kbd><kbd>↓</kbd> select</span>
@@ -224,10 +226,12 @@
         <span><kbd>/</kbd> search</span>
       </div>
     </div>
+  </div>
 
-    <img class="shot" src="assets/screenshot.png" alt="clipLine main window showing clipboard history with types, timestamps and source apps">
+  <div class="shell">
+    <img class="shot" src="../assets/screenshot.png" alt="clipLine main window showing clipboard history with types, timestamps and source apps" loading="lazy" decoding="async">
 
-    <section aria-labelledby="what">
+    <section class="cv" aria-labelledby="what">
       <h2 id="what">What it does</h2>
       <dl class="features">
         <div>
@@ -249,8 +253,8 @@
       </dl>
     </section>
 
-    <section aria-labelledby="install">
-      <h2 id="install">Install</h2>
+    <section class="cv" id="install" aria-labelledby="install-h">
+      <h2 id="install-h">Install</h2>
       <pre>git clone https://github.com/katsugtgz/clip-line.git
 cd clip-line
 cargo install --path crates/clip-line-app</pre>
@@ -258,7 +262,7 @@ cargo install --path crates/clip-line-app</pre>
       No GUI? Try it headless: <code>cargo run -p clip-line-app --bin clip-line-headless</code>.</p>
     </section>
 
-    <section aria-labelledby="why">
+    <section class="cv" aria-labelledby="why">
       <h2 id="why">Why clipLine exists</h2>
       <p>The original ClipDiary is Windows-only and closed source. clipLine is a
       clean-room, MIT-licensed rebuild of the same interaction model — history
@@ -266,9 +270,12 @@ cargo install --path crates/clip-line-app</pre>
       <a href="https://github.com/katsugtgz/clip-line/blob/main/docs/interop.md">docs/interop.md</a>
       for the database format we keep compatible.</p>
     </section>
-  </main>
 
-  <footer>MIT licensed. Not affiliated with Softvoile ClipDiary. Screenshot shows an early build; the UI still evolves.</footer>
-</div>
+    <footer class="cv">
+      <span>MIT licensed.</span>
+      <span>Not affiliated with Softvoile ClipDiary. Screenshot shows an early build; the UI still evolves.</span>
+    </footer>
+  </div>
+</main>
 </body>
 </html>
